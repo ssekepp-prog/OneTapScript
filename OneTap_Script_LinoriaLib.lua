@@ -497,11 +497,18 @@ local function UpdateCameraFOV()
     end
 end
 
--- Профессиональный ESP с хелсбарами, дистанцией и трейсерами
+-- Corner 2D Box ESP с хелсбарами и дистанцией
 local function CreateESP(target)
     local esp = {
-        Box = Drawing.new("Square"),
-        BoxOutline = Drawing.new("Square"),
+        -- 4 угловых линии для бокса
+        TopLeft1 = Drawing.new("Line"),
+        TopLeft2 = Drawing.new("Line"),
+        TopRight1 = Drawing.new("Line"),
+        TopRight2 = Drawing.new("Line"),
+        BottomLeft1 = Drawing.new("Line"),
+        BottomLeft2 = Drawing.new("Line"),
+        BottomRight1 = Drawing.new("Line"),
+        BottomRight2 = Drawing.new("Line"),
         Name = Drawing.new("Text"),
         Distance = Drawing.new("Text"),
         HealthBar = Drawing.new("Square"),
@@ -510,19 +517,18 @@ local function CreateESP(target)
         Tracer = Drawing.new("Line")
     }
     
-    -- Box
-    esp.Box.Thickness = 2
-    esp.Box.Color = Settings.ESP.BoxColor
-    esp.Box.Filled = false
-    esp.Box.Transparency = 1
-    esp.Box.Visible = false
+    -- Corner lines (8 линий для 4 углов)
+    local cornerLines = {
+        esp.TopLeft1, esp.TopLeft2, esp.TopRight1, esp.TopRight2,
+        esp.BottomLeft1, esp.BottomLeft2, esp.BottomRight1, esp.BottomRight2
+    }
     
-    -- Box Outline
-    esp.BoxOutline.Thickness = 3
-    esp.BoxOutline.Color = Color3.fromRGB(0, 0, 0)
-    esp.BoxOutline.Filled = false
-    esp.BoxOutline.Transparency = 1
-    esp.BoxOutline.Visible = false
+    for _, line in pairs(cornerLines) do
+        line.Thickness = 2
+        line.Color = Settings.ESP.BoxColor
+        line.Transparency = 1
+        line.Visible = false
+    end
     
     -- Name
     esp.Name.Size = 13
@@ -623,19 +629,52 @@ local function UpdateESP(target, targetData)
         local boxSize = Vector2.new(width, height)
         local boxPos = Vector2.new(screenPos.X - width / 2, headPos.Y)
         
-        -- Box Outline
+        -- Corner 2D Boxes
         if Settings.ESP.Boxes then
-            esp.BoxOutline.Size = boxSize
-            esp.BoxOutline.Position = boxPos
-            esp.BoxOutline.Visible = true
+            local cornerSize = math.min(width, height) * 0.25 -- Размер углов
             
-            -- Box
-            esp.Box.Size = boxSize
-            esp.Box.Position = boxPos
-            esp.Box.Visible = true
+            -- Top Left Corner
+            esp.TopLeft1.From = Vector2.new(boxPos.X, boxPos.Y)
+            esp.TopLeft1.To = Vector2.new(boxPos.X + cornerSize, boxPos.Y)
+            esp.TopLeft2.From = Vector2.new(boxPos.X, boxPos.Y)
+            esp.TopLeft2.To = Vector2.new(boxPos.X, boxPos.Y + cornerSize)
+            
+            -- Top Right Corner
+            esp.TopRight1.From = Vector2.new(boxPos.X + width, boxPos.Y)
+            esp.TopRight1.To = Vector2.new(boxPos.X + width - cornerSize, boxPos.Y)
+            esp.TopRight2.From = Vector2.new(boxPos.X + width, boxPos.Y)
+            esp.TopRight2.To = Vector2.new(boxPos.X + width, boxPos.Y + cornerSize)
+            
+            -- Bottom Left Corner
+            esp.BottomLeft1.From = Vector2.new(boxPos.X, boxPos.Y + height)
+            esp.BottomLeft1.To = Vector2.new(boxPos.X + cornerSize, boxPos.Y + height)
+            esp.BottomLeft2.From = Vector2.new(boxPos.X, boxPos.Y + height)
+            esp.BottomLeft2.To = Vector2.new(boxPos.X, boxPos.Y + height - cornerSize)
+            
+            -- Bottom Right Corner
+            esp.BottomRight1.From = Vector2.new(boxPos.X + width, boxPos.Y + height)
+            esp.BottomRight1.To = Vector2.new(boxPos.X + width - cornerSize, boxPos.Y + height)
+            esp.BottomRight2.From = Vector2.new(boxPos.X + width, boxPos.Y + height)
+            esp.BottomRight2.To = Vector2.new(boxPos.X + width, boxPos.Y + height - cornerSize)
+            
+            -- Показываем все угловые линии
+            esp.TopLeft1.Visible = true
+            esp.TopLeft2.Visible = true
+            esp.TopRight1.Visible = true
+            esp.TopRight2.Visible = true
+            esp.BottomLeft1.Visible = true
+            esp.BottomLeft2.Visible = true
+            esp.BottomRight1.Visible = true
+            esp.BottomRight2.Visible = true
         else
-            esp.Box.Visible = false
-            esp.BoxOutline.Visible = false
+            esp.TopLeft1.Visible = false
+            esp.TopLeft2.Visible = false
+            esp.TopRight1.Visible = false
+            esp.TopRight2.Visible = false
+            esp.BottomLeft1.Visible = false
+            esp.BottomLeft2.Visible = false
+            esp.BottomRight1.Visible = false
+            esp.BottomRight2.Visible = false
         end
         
         -- Name
@@ -1090,11 +1129,21 @@ SaveManager:SetFolder('OneTapV3/configs')
 SaveManager:BuildConfigSection(Tabs.Settings)
 ThemeManager:ApplyToTab(Tabs.Settings)
 
+-- Очистка ESP при выходе игрока
+Players.PlayerRemoving:Connect(function(player)
+    if ESPObjects[player] then
+        RemoveESP(player)
+    end
+end)
+
 -- Основной цикл
 RunService.RenderStepped:Connect(function()
     local viewportSize = Camera.ViewportSize
     FOVCircle.Position = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
     FOVCircle.Visible = Settings.Aimbot.ShowFOV and Settings.Aimbot.Enabled
+    
+    -- Применяем Camera FOV каждый кадр
+    UpdateCameraFOV()
     
     currentTarget = nil
     if Settings.Aimbot.Enabled or Settings.AutoShoot.Enabled then
@@ -1119,10 +1168,25 @@ RunService.RenderStepped:Connect(function()
     UpdateThirdPerson()
     UpdateSpinbot()
     UpdateBunnyHop()
-    UpdateCameraFOV()
     UpdateTargetHighlight()
     
     if Settings.ESP.Enabled then
+        -- Очистка ESP для игроков которые вышли
+        for target, _ in pairs(ESPObjects) do
+            if target:IsA("Player") then
+                local stillInGame = false
+                for _, player in pairs(Players:GetPlayers()) do
+                    if player == target then
+                        stillInGame = true
+                        break
+                    end
+                end
+                if not stillInGame then
+                    RemoveESP(target)
+                end
+            end
+        end
+        
         for _, player in pairs(Players:GetPlayers()) do
             if player ~= LocalPlayer then
                 if not ESPObjects[player] then
@@ -1139,13 +1203,15 @@ RunService.RenderStepped:Connect(function()
                 end
                 UpdateESP(npc, {Type = "NPC", Character = npc, Name = npc.Name or "Bot"})
             else
-                if ESPObjects[npc] then
-                    for _, obj in pairs(ESPObjects[npc]) do
-                        pcall(function() obj:Remove() end)
-                    end
-                    ESPObjects[npc] = nil
-                end
+                RemoveESP(npc)
                 NPCList[npc] = nil
+            end
+        end
+    else
+        -- Скрываем все ESP если выключено
+        for target, esp in pairs(ESPObjects) do
+            for _, obj in pairs(esp) do
+                obj.Visible = false
             end
         end
     end
