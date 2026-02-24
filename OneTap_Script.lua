@@ -213,14 +213,12 @@ end
 
 -- Функция проверки видимости через стены
 local function IsVisible(targetPart)
+    -- Если Wallbang включен - игнорируем стены
     if Settings.Wallbang.IgnoreWalls then
-        if Settings.Wallbang.WallPenetration >= 100 then
-            return true
-        else
-            return math.random(1, 100) <= Settings.Wallbang.WallPenetration
-        end
+        return true
     end
     
+    -- Если проверка стен выключена
     if not Settings.Aimbot.WallCheck then
         return true
     end
@@ -318,10 +316,31 @@ local function AimAt(targetPart)
     end
 end
 
+-- Silent Aim через камеру (альтернативный метод)
+local silentAimActive = false
+local silentAimTarget = nil
+local originalCameraCFrame = nil
+
+local function SilentAimCamera()
+    if not Settings.Aimbot.SilentAim then return end
+    if not currentTarget or not currentTarget.Character then return end
+    
+    local targetPart = currentTarget.Character:FindFirstChild(Settings.Aimbot.TargetPart)
+    if not targetPart then
+        targetPart = currentTarget.Character:FindFirstChild("Head") or currentTarget.Character:FindFirstChild("HumanoidRootPart")
+    end
+    
+    if targetPart then
+        silentAimTarget = targetPart
+        silentAimActive = true
+    end
+end
+
 -- Silent Aim функция (подмена направления выстрела)
-local silentAimSupported = false
+local silentAimSupported = true
+
 if hookmetamethod and getnamecallmethod then
-    silentAimSupported = true
+    -- Метод 1: Через hookmetamethod (если поддерживается)
     local oldNamecall
     oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
         local method = getnamecallmethod()
@@ -331,10 +350,8 @@ if hookmetamethod and getnamecallmethod then
             if method == "FireServer" or method == "InvokeServer" then
                 local targetPart = currentTarget.Character:FindFirstChild(Settings.Aimbot.TargetPart)
                 if targetPart then
-                    if Settings.Aimbot.SilentAimMode == "On Shoot" then
-                        if args[1] and typeof(args[1]) == "Vector3" then
-                            args[1] = targetPart.Position
-                        end
+                    if args[1] and typeof(args[1]) == "Vector3" then
+                        args[1] = targetPart.Position
                     end
                 end
             end
@@ -342,8 +359,40 @@ if hookmetamethod and getnamecallmethod then
         
         return oldNamecall(self, unpack(args))
     end)
+    print("[One Tap] Silent Aim: Метод hookmetamethod")
 else
-    warn("[One Tap] Silent Aim не поддерживается вашим эксплойтом")
+    -- Метод 2: Через быстрое наведение камеры (работает везде)
+    print("[One Tap] Silent Aim: Метод Camera Snap")
+    
+    -- Отслеживание нажатия мыши для Silent Aim
+    Mouse.Button1Down:Connect(function()
+        if Settings.Aimbot.SilentAim and currentTarget and currentTarget.Character then
+            local targetPart = currentTarget.Character:FindFirstChild(Settings.Aimbot.TargetPart)
+            if not targetPart then
+                targetPart = currentTarget.Character:FindFirstChild("Head") or currentTarget.Character:FindFirstChild("HumanoidRootPart")
+            end
+            
+            if targetPart then
+                -- Сохраняем оригинальную позицию камеры
+                originalCameraCFrame = Camera.CFrame
+                
+                -- Мгновенно наводим на цель
+                local targetPos = targetPart.Position
+                local cameraPos = Camera.CFrame.Position
+                local direction = (targetPos - cameraPos).Unit
+                Camera.CFrame = CFrame.new(cameraPos, cameraPos + direction)
+                
+                -- Возвращаем камеру через минимальную задержку
+                task.spawn(function()
+                    task.wait(0.03)
+                    if originalCameraCFrame then
+                        Camera.CFrame = originalCameraCFrame
+                        originalCameraCFrame = nil
+                    end
+                end)
+            end
+        end
+    end)
 end
 
 -- Auto Shoot функция
@@ -1140,31 +1189,9 @@ CreateCheckbox(AimbotTab, "Включить Aimbot", Settings.Aimbot.Enabled, fu
     Settings.Aimbot.Enabled = value
 end)
 
-if silentAimSupported then
-    CreateCheckbox(AimbotTab, "Silent Aim", Settings.Aimbot.SilentAim, function(value)
-        Settings.Aimbot.SilentAim = value
-    end)
-    
-    CreateDropdown(AimbotTab, "Silent Aim Mode", {"Always", "On Shoot"}, Settings.Aimbot.SilentAimMode, function(value)
-        Settings.Aimbot.SilentAimMode = value
-    end)
-else
-    -- Показать предупреждение, что Silent Aim недоступен
-    local WarningLabel = Instance.new("TextLabel")
-    WarningLabel.Size = UDim2.new(1, -10, 0, 30)
-    WarningLabel.Position = UDim2.new(0, 5, 0, #AimbotTab:GetChildren() * 35)
-    WarningLabel.BackgroundColor3 = Color3.fromRGB(60, 30, 30)
-    WarningLabel.BorderSizePixel = 0
-    WarningLabel.Text = "⚠ Silent Aim не поддерживается"
-    WarningLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
-    WarningLabel.TextSize = 12
-    WarningLabel.Font = Enum.Font.Gotham
-    WarningLabel.Parent = AimbotTab
-    
-    local WarningCorner = Instance.new("UICorner")
-    WarningCorner.CornerRadius = UDim.new(0, 6)
-    WarningCorner.Parent = WarningLabel
-end
+CreateCheckbox(AimbotTab, "Silent Aim", Settings.Aimbot.SilentAim, function(value)
+    Settings.Aimbot.SilentAim = value
+end)
 
 CreateCheckbox(AimbotTab, "Показать FOV круг", Settings.Aimbot.ShowFOV, function(value)
     Settings.Aimbot.ShowFOV = value
@@ -1208,10 +1235,9 @@ end)
 
 CreateCheckbox(AimbotTab, "Ignore Walls (Wallbang)", Settings.Wallbang.IgnoreWalls, function(value)
     Settings.Wallbang.IgnoreWalls = value
-end)
-
-CreateSlider(AimbotTab, "Wall Penetration %", 0, 100, Settings.Wallbang.WallPenetration, function(value)
-    Settings.Wallbang.WallPenetration = value
+    if value then
+        print("[One Tap] Wallbang включен - стены игнорируются")
+    end
 end)
 
 -- Auto Shoot настройки
@@ -1364,15 +1390,18 @@ RunService.RenderStepped:Connect(function()
         currentTarget = GetClosestEnemy()
     end
     
-    -- Aimbot (обычный, если Silent Aim выключен)
-    if Settings.Aimbot.Enabled and not Settings.Aimbot.SilentAim then
+    -- Aimbot (обычный, если Silent Aim выключен или используется Camera Snap метод)
+    if Settings.Aimbot.Enabled then
         if currentTarget and currentTarget.Character then
             local targetPart = currentTarget.Character:FindFirstChild(Settings.Aimbot.TargetPart)
             if not targetPart then
                 targetPart = currentTarget.Character:FindFirstChild("Head") or currentTarget.Character:FindFirstChild("HumanoidRootPart")
             end
             if targetPart then
-                AimAt(targetPart)
+                -- Если Silent Aim выключен - используем обычный аим
+                if not Settings.Aimbot.SilentAim then
+                    AimAt(targetPart)
+                end
             end
         end
     end
@@ -1420,11 +1449,7 @@ print("ONE TAP V2 - CS:GO STYLE LOADED")
 print("========================================")
 print("Новые функции:")
 print("✓ NPC/Bot Detection")
-if silentAimSupported then
-    print("✓ Silent Aim")
-else
-    print("✗ Silent Aim (не поддерживается)")
-end
+print("✓ Silent Aim (Camera Snap)")
 print("✓ Auto Shoot")
 print("✓ Wallbang")
 print("✓ Third Person Mode")
