@@ -1,16 +1,7 @@
 --[[
-    One Tap Aimbot & ESP Script V2
+    One Tap V3 - Premium Edition with LinoriaLib
     Совместимость: Xeno, Krnl, Synapse, Fluxus
     Игра: [FPS] One Tap
-    
-    Новые функции:
-    - NPC/Bot Detection
-    - Silent Aim
-    - Auto Shoot
-    - Wallbang
-    - Third Person Mode
-    - Spinbot
-    - CS:GO Style GUI
 ]]
 
 -- Защита от повторного запуска
@@ -20,13 +11,17 @@ if getgenv().OneTapLoaded then
 end
 getgenv().OneTapLoaded = true
 
+-- Загрузка LinoriaLib
+local repo = 'https://raw.githubusercontent.com/violin-suzutsuki/LinoriaLib/main/'
+local Library = loadstring(game:HttpGet(repo .. 'Library.lua'))()
+local ThemeManager = loadstring(game:HttpGet(repo .. 'addons/ThemeManager.lua'))()
+local SaveManager = loadstring(game:HttpGet(repo .. 'addons/SaveManager.lua'))()
+
 -- Сервисы
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Camera = workspace.CurrentCamera
-local VirtualInputManager = game:GetService("VirtualInputManager")
-local TweenService = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
@@ -36,7 +31,6 @@ local Settings = {
     Aimbot = {
         Enabled = false,
         SilentAim = false,
-        SilentAimMode = "Always",
         FOV = 150,
         ShowFOV = true,
         Smoothness = 0.2,
@@ -97,55 +91,24 @@ local Settings = {
     }
 }
 
--- Загрузка сохранённых настроек
-if isfile and readfile and isfile("OneTapConfig.json") then
-    local success, data = pcall(function()
-        return game:GetService("HttpService"):JSONDecode(readfile("OneTapConfig.json"))
-    end)
-    if success and data then
-        for category, options in pairs(data) do
-            if Settings[category] then
-                for key, value in pairs(options) do
-                    if type(value) == "table" and type(Settings[category][key]) == "userdata" then
-                        Settings[category][key] = Color3.fromRGB(value.R, value.G, value.B)
-                    else
-                        Settings[category][key] = value
-                    end
-                end
-            end
-        end
-    end
-end
-
--- Функция сохранения настроек
-local function SaveSettings()
-    if writefile then
-        local success = pcall(function()
-            local saveData = {}
-            for category, options in pairs(Settings) do
-                saveData[category] = {}
-                for key, value in pairs(options) do
-                    if type(value) == "userdata" then
-                        saveData[category][key] = {R = value.R * 255, G = value.G * 255, B = value.B * 255}
-                    else
-                        saveData[category][key] = value
-                    end
-                end
-            end
-            writefile("OneTapConfig.json", game:GetService("HttpService"):JSONEncode(saveData))
-        end)
-        if success then
-            print("Настройки сохранены!")
-        end
-    end
-end
-
--- ESP объекты для каждого игрока и NPC
+-- Переменные
 local ESPObjects = {}
 local NPCList = {}
-
--- FOV круг
 local FOVCircle = Drawing.new("Circle")
+local lastShootTime = 0
+local currentTarget = nil
+local autoShootKeyPressed = false
+local originalCameraType = nil
+local originalCameraSubject = nil
+local spinAngle = 0
+local lastJumpTime = 0
+local bhopKeyPressed = false
+local originalCameraFOV = Camera.FieldOfView or 70
+local targetHighlight = nil
+local isSilentAiming = false
+local savedCameraCFrame = nil
+
+-- Инициализация FOV круга
 FOVCircle.Thickness = Settings.Aimbot.FOVThickness
 FOVCircle.NumSides = 50
 FOVCircle.Radius = Settings.Aimbot.FOV
@@ -154,33 +117,10 @@ FOVCircle.Visible = Settings.Aimbot.ShowFOV
 FOVCircle.Filled = Settings.Aimbot.FOVFilled
 FOVCircle.Transparency = Settings.Aimbot.FOVTransparency
 
--- Переменные для Auto Shoot
-local lastShootTime = 0
-local currentTarget = nil
-local autoShootKeyPressed = false
-
--- Переменные для Third Person
-local originalCameraType = nil
-local originalCameraSubject = nil
-
--- Переменные для Spinbot
-local spinAngle = 0
-
--- Переменные для Bunny Hop
-local lastJumpTime = 0
-local bhopKeyPressed = false
-
--- Переменные для Camera FOV
-local originalCameraFOV = Camera.FieldOfView or 70
-
--- Переменные для подсветки цели
-local targetHighlight = nil
-
 -- Функция получения всех целей (игроки + NPC)
 local function GetAllTargets()
     local targets = {}
     
-    -- Добавляем игроков
     for _, player in pairs(Players:GetPlayers()) do
         if player ~= LocalPlayer and player.Character then
             local humanoid = player.Character:FindFirstChild("Humanoid")
@@ -196,7 +136,6 @@ local function GetAllTargets()
         end
     end
     
-    -- Добавляем NPC из workspace
     for _, obj in pairs(workspace:GetDescendants()) do
         if obj:IsA("Model") and obj ~= LocalPlayer.Character then
             local humanoid = obj:FindFirstChild("Humanoid")
@@ -225,21 +164,16 @@ local function GetAllTargets()
     return targets
 end
 
--- Функция проверки видимости через стены (с поддержкой разных режимов Wallbang)
+-- Функция проверки видимости
 local function IsVisible(targetPart)
-    -- Если Wallbang включен
     if Settings.Wallbang.IgnoreWalls then
         if Settings.Wallbang.WallbangMode == "Always" then
-            -- Режим Always: всегда пробивает любые стены
             return true
         elseif Settings.Wallbang.WallbangMode == "Penetration" then
-            -- Режим Penetration: шанс пробития
             return math.random(1, 100) <= Settings.Wallbang.WallPenetration
         end
-        -- Режим Raycast: проверка ниже
     end
     
-    -- Если проверка стен выключена
     if not Settings.Aimbot.WallCheck then
         return true
     end
@@ -260,7 +194,7 @@ local function IsVisible(targetPart)
     return rayResult == nil or rayResult.Instance:IsDescendantOf(targetPart.Parent)
 end
 
--- Функция получения ближайшего врага в FOV (с поддержкой NPC и приоритетов)
+-- Функция получения ближайшего врага
 local function GetClosestEnemy()
     local closestTarget = nil
     local bestValue = math.huge
@@ -285,7 +219,6 @@ local function GetClosestEnemy()
                 
                 if onScreen then
                     local screenPoint = Vector2.new(screenPos.X, screenPos.Y)
-                    local distanceFromMouse = (screenPoint - mousePos).Magnitude
                     local distanceFromCenter = (screenPoint - viewportCenter).Magnitude
                     
                     if distanceFromCenter <= Settings.Aimbot.FOV then
@@ -320,7 +253,7 @@ local function GetClosestEnemy()
     return closestTarget
 end
 
--- Функция наведения на цель (обычный аим)
+-- Функция наведения
 local function AimAt(targetPart)
     if not targetPart then return end
     
@@ -337,7 +270,7 @@ local function AimAt(targetPart)
     end
 end
 
--- Функция создания подсветки цели
+-- Создание подсветки цели
 local function CreateTargetHighlight()
     if targetHighlight then
         targetHighlight:Remove()
@@ -351,7 +284,7 @@ local function CreateTargetHighlight()
     targetHighlight.Visible = false
 end
 
--- Функция обновления подсветки цели
+-- Обновление подсветки цели
 local function UpdateTargetHighlight()
     if not Settings.Visual.HighlightTarget or not currentTarget then
         if targetHighlight then
@@ -390,14 +323,7 @@ local function UpdateTargetHighlight()
     end
 end
 
--- Silent Aim функция (улучшенный метод через мгновенный поворот камеры)
-local silentAimSupported = true
-local isSilentAiming = false
-local savedCameraCFrame = nil
-
-print("[One Tap] Silent Aim: Camera Snap Method (Improved)")
-
--- Отслеживание нажатия мыши для Silent Aim
+-- Silent Aim с улучшенной точностью и предсказанием
 Mouse.Button1Down:Connect(function()
     if not Settings.Aimbot.SilentAim then return end
     if not Settings.Aimbot.Enabled then return end
@@ -411,19 +337,30 @@ Mouse.Button1Down:Connect(function()
     
     if targetPart then
         isSilentAiming = true
-        
-        -- Сохраняем текущую позицию камеры
         savedCameraCFrame = Camera.CFrame
         
-        -- Мгновенно поворачиваем камеру на цель
+        -- Предсказание позиции цели (velocity prediction)
         local targetPos = targetPart.Position
+        local targetVelocity = targetPart.AssemblyLinearVelocity or Vector3.new(0, 0, 0)
+        local distance = (targetPos - Camera.CFrame.Position).Magnitude
+        local bulletSpeed = 1000 -- Примерная скорость пули
+        local timeToHit = distance / bulletSpeed
+        
+        -- Предсказываем позицию с учётом движения
+        local predictedPos = targetPos + (targetVelocity * timeToHit)
+        
+        -- Расширение хитбокса - целимся чуть выше центра для лучшего попадания
+        if Settings.Aimbot.TargetPart == "Head" then
+            predictedPos = predictedPos + Vector3.new(0, 0.2, 0)
+        end
+        
         local cameraPos = Camera.CFrame.Position
-        local direction = (targetPos - cameraPos).Unit
+        local direction = (predictedPos - cameraPos).Unit
         Camera.CFrame = CFrame.new(cameraPos, cameraPos + direction)
         
-        -- Возвращаем камеру обратно в том же кадре (через task.wait())
+        -- Удерживаем прицел на цели чуть дольше для гарантии попадания
         task.spawn(function()
-            task.wait() -- Ждём 1 кадр
+            task.wait(0.05) -- Увеличено с task.wait() до 0.05 сек
             if savedCameraCFrame then
                 Camera.CFrame = savedCameraCFrame
                 savedCameraCFrame = nil
@@ -433,7 +370,7 @@ Mouse.Button1Down:Connect(function()
     end
 end)
 
--- Auto Shoot функция
+-- Auto Shoot
 local function AutoShoot()
     if not Settings.AutoShoot.Enabled then return end
     if Settings.AutoShoot.AutoShootKey ~= "None" and not autoShootKeyPressed then return end
@@ -450,10 +387,6 @@ local function AutoShoot()
                     mouse1press()
                     task.wait(0.01)
                     mouse1release()
-                elseif VirtualInputManager then
-                    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-                    task.wait(0.01)
-                    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
                 end
             end)
             lastShootTime = currentTime
@@ -461,7 +394,7 @@ local function AutoShoot()
     end
 end
 
--- Third Person функция
+-- Third Person
 local function UpdateThirdPerson()
     if not LocalPlayer.Character then return end
     
@@ -486,7 +419,7 @@ local function UpdateThirdPerson()
     end
 end
 
--- Spinbot функция
+-- Spinbot
 local function UpdateSpinbot()
     if not Settings.Spinbot.Enabled then return end
     if not LocalPlayer.Character then return end
@@ -515,12 +448,11 @@ local function UpdateSpinbot()
     end
 end
 
--- Bunny Hop функция
+-- Bunny Hop
 local function UpdateBunnyHop()
     if not Settings.BunnyHop.Enabled then return end
     if not LocalPlayer.Character then return end
     
-    -- Проверка клавиши (если установлена)
     if Settings.BunnyHop.HoldKey ~= "None" and not bhopKeyPressed then
         return
     end
@@ -529,26 +461,20 @@ local function UpdateBunnyHop()
     local humanoidRootPart = LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
     if not humanoid or not humanoidRootPart then return end
     
-    -- Проверка скорости движения
     local currentSpeed = humanoidRootPart.Velocity.Magnitude
     if currentSpeed < Settings.BunnyHop.MinSpeed then return end
     
-    -- Проверка, что игрок движется
     if humanoid.MoveDirection.Magnitude <= 0 then return end
     
-    -- Проверка, что игрок на земле
     local onGround = humanoid.FloorMaterial ~= Enum.Material.Air
     
-    -- Задержка между прыжками (0.1 секунды)
     local currentTime = tick()
     if currentTime - lastJumpTime < 0.1 then return end
     
     if onGround then
-        -- Симуляция прыжка
         humanoid:ChangeState(Enum.HumanoidStateType.Jumping)
         lastJumpTime = currentTime
         
-        -- Auto Strafe: добавление бокового ускорения в воздухе
         if Settings.BunnyHop.AutoStrafe then
             task.spawn(function()
                 task.wait(0.05)
@@ -564,66 +490,79 @@ local function UpdateBunnyHop()
     end
 end
 
--- Camera FOV функция
+-- Camera FOV
 local function UpdateCameraFOV()
     if Camera then
         Camera.FieldOfView = Settings.Visual.CameraFOV
     end
 end
 
--- Создание ESP объектов для игрока или NPC
+-- Профессиональный ESP с хелсбарами, дистанцией и трейсерами
 local function CreateESP(target)
     local esp = {
         Box = Drawing.new("Square"),
+        BoxOutline = Drawing.new("Square"),
         Name = Drawing.new("Text"),
+        Distance = Drawing.new("Text"),
         HealthBar = Drawing.new("Square"),
         HealthBarOutline = Drawing.new("Square"),
         HealthText = Drawing.new("Text"),
-        Distance = Drawing.new("Text"),
         Tracer = Drawing.new("Line")
     }
     
-    -- Настройка Box
+    -- Box
     esp.Box.Thickness = 2
-    esp.Box.Filled = false
     esp.Box.Color = Settings.ESP.BoxColor
+    esp.Box.Filled = false
     esp.Box.Transparency = 1
     esp.Box.Visible = false
     
-    -- Настройка Name
-    esp.Name.Size = 14
+    -- Box Outline
+    esp.BoxOutline.Thickness = 3
+    esp.BoxOutline.Color = Color3.fromRGB(0, 0, 0)
+    esp.BoxOutline.Filled = false
+    esp.BoxOutline.Transparency = 1
+    esp.BoxOutline.Visible = false
+    
+    -- Name
+    esp.Name.Size = 13
     esp.Name.Center = true
     esp.Name.Outline = true
     esp.Name.Color = Settings.ESP.NameColor
     esp.Name.Visible = false
+    esp.Name.Font = 2
     
-    -- Настройка Health Bar
-    esp.HealthBar.Filled = true
+    -- Distance
+    esp.Distance.Size = 12
+    esp.Distance.Center = true
+    esp.Distance.Outline = true
+    esp.Distance.Color = Color3.fromRGB(255, 255, 255)
+    esp.Distance.Visible = false
+    esp.Distance.Font = 2
+    
+    -- Health Bar Background
+    esp.HealthBarOutline.Thickness = 1
+    esp.HealthBarOutline.Color = Color3.fromRGB(0, 0, 0)
+    esp.HealthBarOutline.Filled = true
+    esp.HealthBarOutline.Transparency = 0.5
+    esp.HealthBarOutline.Visible = false
+    
+    -- Health Bar
+    esp.HealthBar.Thickness = 1
     esp.HealthBar.Color = Settings.ESP.HealthColor
+    esp.HealthBar.Filled = true
     esp.HealthBar.Transparency = 1
     esp.HealthBar.Visible = false
     
-    esp.HealthBarOutline.Thickness = 1
-    esp.HealthBarOutline.Filled = false
-    esp.HealthBarOutline.Color = Color3.fromRGB(0, 0, 0)
-    esp.HealthBarOutline.Transparency = 1
-    esp.HealthBarOutline.Visible = false
-    
-    -- Настройка Health Text
+    -- Health Text
     esp.HealthText.Size = 12
     esp.HealthText.Center = true
     esp.HealthText.Outline = true
     esp.HealthText.Color = Color3.fromRGB(255, 255, 255)
     esp.HealthText.Visible = false
+    esp.HealthText.Font = 2
     
-    -- Настройка Distance
-    esp.Distance.Size = 12
-    esp.Distance.Center = true
-    esp.Distance.Outline = true
-    esp.Distance.Color = Settings.ESP.NameColor
-    esp.Distance.Visible = false
-    
-    -- Настройка Tracer
+    -- Tracer
     esp.Tracer.Thickness = 1
     esp.Tracer.Color = Settings.ESP.TracerColor
     esp.Tracer.Transparency = 1
@@ -632,19 +571,24 @@ local function CreateESP(target)
     ESPObjects[target] = esp
 end
 
--- Удаление ESP объектов
 local function RemoveESP(target)
     if ESPObjects[target] then
         for _, obj in pairs(ESPObjects[target]) do
-            obj:Remove()
+            pcall(function() obj:Remove() end)
         end
         ESPObjects[target] = nil
     end
 end
 
--- Обновление ESP для игрока или NPC
 local function UpdateESP(target, targetData)
-    if not Settings.ESP.Enabled then return end
+    if not Settings.ESP.Enabled then
+        if ESPObjects[target] then
+            for _, obj in pairs(ESPObjects[target]) do
+                obj.Visible = false
+            end
+        end
+        return
+    end
     
     local esp = ESPObjects[target]
     if not esp then return end
@@ -659,8 +603,9 @@ local function UpdateESP(target, targetData)
     
     local humanoid = character:FindFirstChild("Humanoid")
     local rootPart = character:FindFirstChild("HumanoidRootPart")
+    local head = character:FindFirstChild("Head")
     
-    if not humanoid or not rootPart or humanoid.Health <= 0 then
+    if not rootPart or not humanoid or humanoid.Health <= 0 then
         for _, obj in pairs(esp) do
             obj.Visible = false
         end
@@ -668,841 +613,494 @@ local function UpdateESP(target, targetData)
     end
     
     local screenPos, onScreen = Camera:WorldToViewportPoint(rootPart.Position)
+    local headPos = head and Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0)) or screenPos
+    local legPos = Camera:WorldToViewportPoint(rootPart.Position - Vector3.new(0, 3, 0))
     
-    if not onScreen then
+    if onScreen then
+        -- Размер бокса
+        local height = (headPos.Y - legPos.Y)
+        local width = height / 2
+        local boxSize = Vector2.new(width, height)
+        local boxPos = Vector2.new(screenPos.X - width / 2, headPos.Y)
+        
+        -- Box Outline
+        if Settings.ESP.Boxes then
+            esp.BoxOutline.Size = boxSize
+            esp.BoxOutline.Position = boxPos
+            esp.BoxOutline.Visible = true
+            
+            -- Box
+            esp.Box.Size = boxSize
+            esp.Box.Position = boxPos
+            esp.Box.Visible = true
+        else
+            esp.Box.Visible = false
+            esp.BoxOutline.Visible = false
+        end
+        
+        -- Name
+        if Settings.ESP.Names then
+            local displayName = targetData and targetData.Name or (target.Name or "Bot")
+            if targetData and targetData.Type == "NPC" then
+                displayName = "[NPC] " .. displayName
+            end
+            esp.Name.Text = displayName
+            esp.Name.Position = Vector2.new(screenPos.X, headPos.Y - 15)
+            esp.Name.Visible = true
+        else
+            esp.Name.Visible = false
+        end
+        
+        -- Distance
+        if Settings.ESP.Distance and LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
+            local distance = (LocalPlayer.Character.HumanoidRootPart.Position - rootPart.Position).Magnitude
+            esp.Distance.Text = string.format("[%d studs]", math.floor(distance))
+            esp.Distance.Position = Vector2.new(screenPos.X, legPos.Y + 5)
+            esp.Distance.Visible = true
+        else
+            esp.Distance.Visible = false
+        end
+        
+        -- Health Bar
+        if Settings.ESP.Health then
+            local healthPercent = humanoid.Health / humanoid.MaxHealth
+            local barHeight = height
+            local barWidth = 4
+            
+            -- Health Bar Outline
+            esp.HealthBarOutline.Size = Vector2.new(barWidth + 2, barHeight + 2)
+            esp.HealthBarOutline.Position = Vector2.new(boxPos.X - barWidth - 4, boxPos.Y - 1)
+            esp.HealthBarOutline.Visible = true
+            
+            -- Health Bar Fill
+            local healthBarHeight = barHeight * healthPercent
+            esp.HealthBar.Size = Vector2.new(barWidth, healthBarHeight)
+            esp.HealthBar.Position = Vector2.new(boxPos.X - barWidth - 3, boxPos.Y + (barHeight - healthBarHeight))
+            
+            -- Цвет в зависимости от хелса
+            if healthPercent > 0.75 then
+                esp.HealthBar.Color = Color3.fromRGB(0, 255, 0)
+            elseif healthPercent > 0.5 then
+                esp.HealthBar.Color = Color3.fromRGB(255, 255, 0)
+            elseif healthPercent > 0.25 then
+                esp.HealthBar.Color = Color3.fromRGB(255, 165, 0)
+            else
+                esp.HealthBar.Color = Color3.fromRGB(255, 0, 0)
+            end
+            
+            esp.HealthBar.Visible = true
+            
+            -- Health Text
+            esp.HealthText.Text = string.format("%d", math.floor(humanoid.Health))
+            esp.HealthText.Position = Vector2.new(boxPos.X - barWidth - 3, boxPos.Y - 15)
+            esp.HealthText.Visible = true
+        else
+            esp.HealthBar.Visible = false
+            esp.HealthBarOutline.Visible = false
+            esp.HealthText.Visible = false
+        end
+        
+        -- Tracer
+        if Settings.ESP.Tracers then
+            local tracerStart = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
+            esp.Tracer.From = tracerStart
+            esp.Tracer.To = Vector2.new(screenPos.X, legPos.Y)
+            esp.Tracer.Visible = true
+        else
+            esp.Tracer.Visible = false
+        end
+    else
         for _, obj in pairs(esp) do
             obj.Visible = false
         end
-        return
-    end
-    
-    -- Вычисление размера бокса
-    local headPos = character:FindFirstChild("Head") and character.Head.Position or rootPart.Position + Vector3.new(0, 2, 0)
-    local legPos = rootPart.Position - Vector3.new(0, 3, 0)
-    
-    local topScreen = Camera:WorldToViewportPoint(headPos)
-    local bottomScreen = Camera:WorldToViewportPoint(legPos)
-    
-    local height = math.abs(topScreen.Y - bottomScreen.Y)
-    local width = height / 2
-    
-    -- Обновление Box
-    if Settings.ESP.Boxes then
-        esp.Box.Size = Vector2.new(width, height)
-        esp.Box.Position = Vector2.new(screenPos.X - width / 2, screenPos.Y - height / 2)
-        esp.Box.Color = Settings.ESP.BoxColor
-        esp.Box.Visible = true
-    else
-        esp.Box.Visible = false
-    end
-    
-    -- Обновление Name
-    if Settings.ESP.Names then
-        local displayName = targetData and targetData.Name or (target.Name or "Bot")
-        if targetData and targetData.Type == "NPC" then
-            displayName = "[NPC] " .. displayName
-        end
-        esp.Name.Text = displayName
-        esp.Name.Position = Vector2.new(screenPos.X, topScreen.Y - 20)
-        esp.Name.Color = Settings.ESP.NameColor
-        esp.Name.Visible = true
-    else
-        esp.Name.Visible = false
-    end
-    
-    -- Обновление Health Bar
-    if Settings.ESP.Health then
-        local healthPercent = humanoid.Health / humanoid.MaxHealth
-        local barHeight = height
-        local barWidth = 4
-        
-        esp.HealthBarOutline.Size = Vector2.new(barWidth + 2, barHeight + 2)
-        esp.HealthBarOutline.Position = Vector2.new(screenPos.X - width / 2 - barWidth - 4, screenPos.Y - height / 2 - 1)
-        esp.HealthBarOutline.Visible = true
-        
-        esp.HealthBar.Size = Vector2.new(barWidth, barHeight * healthPercent)
-        esp.HealthBar.Position = Vector2.new(screenPos.X - width / 2 - barWidth - 3, screenPos.Y + height / 2 - barHeight * healthPercent + 1)
-        
-        -- Цвет в зависимости от здоровья
-        if healthPercent > 0.6 then
-            esp.HealthBar.Color = Color3.fromRGB(0, 255, 0)
-        elseif healthPercent > 0.3 then
-            esp.HealthBar.Color = Color3.fromRGB(255, 255, 0)
-        else
-            esp.HealthBar.Color = Color3.fromRGB(255, 0, 0)
-        end
-        
-        esp.HealthBar.Visible = true
-        
-        esp.HealthText.Text = string.format("%d/%d", math.floor(humanoid.Health), math.floor(humanoid.MaxHealth))
-        esp.HealthText.Position = Vector2.new(screenPos.X - width / 2 - barWidth - 3, screenPos.Y - height / 2 - 15)
-        esp.HealthText.Visible = true
-    else
-        esp.HealthBar.Visible = false
-        esp.HealthBarOutline.Visible = false
-        esp.HealthText.Visible = false
-    end
-    
-    -- Обновление Distance
-    if Settings.ESP.Distance then
-        local distance = (LocalPlayer.Character.HumanoidRootPart.Position - rootPart.Position).Magnitude
-        esp.Distance.Text = string.format("[%d studs]", math.floor(distance))
-        esp.Distance.Position = Vector2.new(screenPos.X, bottomScreen.Y + 5)
-        esp.Distance.Color = Settings.ESP.NameColor
-        esp.Distance.Visible = true
-    else
-        esp.Distance.Visible = false
-    end
-    
-    -- Обновление Tracer
-    if Settings.ESP.Tracers then
-        esp.Tracer.From = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y)
-        esp.Tracer.To = Vector2.new(screenPos.X, screenPos.Y)
-        esp.Tracer.Color = Settings.ESP.TracerColor
-        esp.Tracer.Visible = true
-    else
-        esp.Tracer.Visible = false
     end
 end
 
--- Инициализация ESP для всех игроков
-for _, player in pairs(Players:GetPlayers()) do
-    if player ~= LocalPlayer then
-        CreateESP(player)
+-- Создание GUI с LinoriaLib
+local Window = Library:CreateWindow({
+    Title = 'ONE TAP V3 | Premium Edition',
+    Center = true,
+    AutoShow = true,
+    TabPadding = 8,
+    MenuFadeTime = 0.2
+})
+
+local Tabs = {
+    Aimbot = Window:AddTab('Aimbot'),
+    ESP = Window:AddTab('ESP'),
+    Misc = Window:AddTab('Misc'),
+    Settings = Window:AddTab('Settings')
+}
+
+-- Aimbot Tab
+local AimbotBox = Tabs.Aimbot:AddLeftGroupbox('Aimbot Settings')
+
+AimbotBox:AddToggle('AimbotEnabled', {
+    Text = 'Enable Aimbot',
+    Default = false,
+    Tooltip = 'Включить аимбот',
+    Callback = function(Value)
+        Settings.Aimbot.Enabled = Value
     end
-end
+})
 
--- События добавления/удаления игроков
-Players.PlayerAdded:Connect(function(player)
-    CreateESP(player)
-end)
-
-Players.PlayerRemoving:Connect(function(player)
-    RemoveESP(player)
-end)
-
--- Отслеживание NPC
-workspace.DescendantAdded:Connect(function(obj)
-    task.wait(0.1)
-    if obj:IsA("Model") and obj:FindFirstChild("Humanoid") and obj:FindFirstChild("HumanoidRootPart") then
-        local isPlayer = false
-        for _, player in pairs(Players:GetPlayers()) do
-            if player.Character == obj then
-                isPlayer = true
-                break
-            end
-        end
-        if not isPlayer and not ESPObjects[obj] then
-            CreateESP(obj)
-            NPCList[obj] = true
-        end
+AimbotBox:AddToggle('SilentAim', {
+    Text = 'Silent Aim',
+    Default = false,
+    Tooltip = 'Мгновенное наведение при выстреле',
+    Callback = function(Value)
+        Settings.Aimbot.SilentAim = Value
     end
-end)
+})
 
-workspace.DescendantRemoving:Connect(function(obj)
-    if NPCList[obj] then
-        RemoveESP(obj)
-        NPCList[obj] = nil
+AimbotBox:AddSlider('FOVRadius', {
+    Text = 'FOV Radius',
+    Default = 150,
+    Min = 50,
+    Max = 300,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.Aimbot.FOV = Value
+        FOVCircle.Radius = Value
     end
-end)
+})
 
--- Обработка клавиш для Auto Shoot
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if Settings.AutoShoot.AutoShootKey ~= "None" then
-        if input.KeyCode.Name == Settings.AutoShoot.AutoShootKey then
-            autoShootKeyPressed = true
-        end
+AimbotBox:AddSlider('Smoothness', {
+    Text = 'Smoothness',
+    Default = 20,
+    Min = 0,
+    Max = 100,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.Aimbot.Smoothness = Value / 100
     end
-end)
+})
 
-UserInputService.InputEnded:Connect(function(input, gameProcessed)
-    if Settings.AutoShoot.AutoShootKey ~= "None" then
-        if input.KeyCode.Name == Settings.AutoShoot.AutoShootKey then
-            autoShootKeyPressed = false
-        end
+AimbotBox:AddSlider('MaxDistance', {
+    Text = 'Max Distance',
+    Default = 300,
+    Min = 50,
+    Max = 500,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.Aimbot.MaxDistance = Value
     end
-    
-    -- Bunny Hop key release
-    if Settings.BunnyHop.HoldKey ~= "None" then
-        if input.KeyCode.Name == Settings.BunnyHop.HoldKey then
-            bhopKeyPressed = false
-        end
+})
+
+AimbotBox:AddDropdown('TargetPart', {
+    Values = {'Head', 'HumanoidRootPart', 'UpperTorso'},
+    Default = 1,
+    Multi = false,
+    Text = 'Target Part',
+    Tooltip = 'Часть тела для прицеливания',
+    Callback = function(Value)
+        Settings.Aimbot.TargetPart = Value
     end
-end)
+})
 
--- Обработка нажатия клавиши для Bunny Hop
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if not gameProcessed and Settings.BunnyHop.HoldKey ~= "None" then
-        if input.KeyCode.Name == Settings.BunnyHop.HoldKey then
-            bhopKeyPressed = true
-        end
+AimbotBox:AddDropdown('TargetPriority', {
+    Values = {'Closest to Crosshair', 'Lowest Health', 'Closest Distance'},
+    Default = 1,
+    Multi = false,
+    Text = 'Target Priority',
+    Callback = function(Value)
+        Settings.Aimbot.TargetPriority = Value
     end
-end)
+})
 
--- Создание GUI
-local ScreenGui = Instance.new("ScreenGui")
-ScreenGui.Name = "OneTapGUI"
-ScreenGui.ResetOnSpawn = false
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+-- FOV Settings
+local FOVBox = Tabs.Aimbot:AddRightGroupbox('FOV Settings')
 
--- Защита GUI от обнаружения
-pcall(function()
-    if gethui then
-        ScreenGui.Parent = gethui()
-    elseif syn and syn.protect_gui then
-        syn.protect_gui(ScreenGui)
-        ScreenGui.Parent = game.CoreGui
-    else
-        ScreenGui.Parent = game.CoreGui
+FOVBox:AddToggle('ShowFOV', {
+    Text = 'Show FOV Circle',
+    Default = true,
+    Callback = function(Value)
+        Settings.Aimbot.ShowFOV = Value
     end
-end)
+})
 
-if not ScreenGui.Parent then
-    ScreenGui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
-end
-
--- Главное окно (CS:GO Style)
-local MainFrame = Instance.new("Frame")
-MainFrame.Name = "MainFrame"
-MainFrame.Size = UDim2.new(0, 550, 0, 450)
-MainFrame.Position = UDim2.new(0.5, -275, 0.5, -225)
-MainFrame.BackgroundColor3 = Color3.fromRGB(30, 30, 30)
-MainFrame.BorderSizePixel = 0
-MainFrame.Active = true
-MainFrame.Draggable = true
-MainFrame.Visible = false
-MainFrame.Parent = ScreenGui
-
-local UICorner = Instance.new("UICorner")
-UICorner.CornerRadius = UDim.new(0, 8)
-UICorner.Parent = MainFrame
-
--- Заголовок (CS:GO Style)
-local Title = Instance.new("TextLabel")
-Title.Name = "Title"
-Title.Size = UDim2.new(1, 0, 0, 45)
-Title.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
-Title.BorderSizePixel = 0
-Title.Text = "ONE TAP V3 | PREMIUM"
-Title.TextColor3 = Color3.fromRGB(255, 215, 0)
-Title.TextSize = 20
-Title.Font = Enum.Font.GothamBold
-Title.Parent = MainFrame
-
-local TitleCorner = Instance.new("UICorner")
-TitleCorner.CornerRadius = UDim.new(0, 8)
-TitleCorner.Parent = Title
-
--- Кнопка закрытия
-local CloseButton = Instance.new("TextButton")
-CloseButton.Name = "CloseButton"
-CloseButton.Size = UDim2.new(0, 30, 0, 30)
-CloseButton.Position = UDim2.new(1, -35, 0, 5)
-CloseButton.BackgroundColor3 = Color3.fromRGB(255, 50, 50)
-CloseButton.BorderSizePixel = 0
-CloseButton.Text = "X"
-CloseButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-CloseButton.TextSize = 16
-CloseButton.Font = Enum.Font.GothamBold
-CloseButton.Parent = Title
-
-local CloseCorner = Instance.new("UICorner")
-CloseCorner.CornerRadius = UDim.new(0, 6)
-CloseCorner.Parent = CloseButton
-
-CloseButton.MouseButton1Click:Connect(function()
-    MainFrame.Visible = false
-end)
-
--- Контейнер для вкладок
-local TabContainer = Instance.new("Frame")
-TabContainer.Name = "TabContainer"
-TabContainer.Size = UDim2.new(1, -20, 0, 38)
-TabContainer.Position = UDim2.new(0, 10, 0, 55)
-TabContainer.BackgroundTransparency = 1
-TabContainer.Parent = MainFrame
-
--- Контейнер для содержимого
-local ContentContainer = Instance.new("Frame")
-ContentContainer.Name = "ContentContainer"
-ContentContainer.Size = UDim2.new(1, -20, 1, -113)
-ContentContainer.Position = UDim2.new(0, 10, 0, 103)
-ContentContainer.BackgroundTransparency = 1
-ContentContainer.Parent = MainFrame
-
--- Функция создания вкладки (CS:GO Style)
-local currentTab = nil
-local function CreateTab(name, position)
-    local TabButton = Instance.new("TextButton")
-    TabButton.Name = name .. "Tab"
-    TabButton.Size = UDim2.new(0, 125, 1, 0)
-    TabButton.Position = UDim2.new(0, position, 0, 0)
-    TabButton.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-    TabButton.BorderSizePixel = 0
-    TabButton.Text = name:upper()
-    TabButton.TextColor3 = Color3.fromRGB(180, 180, 180)
-    TabButton.TextSize = 13
-    TabButton.Font = Enum.Font.GothamBold
-    TabButton.Parent = TabContainer
-    
-    local TabCorner = Instance.new("UICorner")
-    TabCorner.CornerRadius = UDim.new(0, 6)
-    TabCorner.Parent = TabButton
-    
-    local TabContent = Instance.new("ScrollingFrame")
-    TabContent.Name = name .. "Content"
-    TabContent.Size = UDim2.new(1, 0, 1, 0)
-    TabContent.BackgroundTransparency = 1
-    TabContent.BorderSizePixel = 0
-    TabContent.ScrollBarThickness = 4
-    TabContent.Visible = false
-    TabContent.CanvasSize = UDim2.new(0, 0, 0, 0)
-    TabContent.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    TabContent.Parent = ContentContainer
-    
-    TabButton.MouseButton1Click:Connect(function()
-        for _, child in pairs(ContentContainer:GetChildren()) do
-            if child:IsA("ScrollingFrame") then
-                child.Visible = false
-            end
-        end
-        for _, child in pairs(TabContainer:GetChildren()) do
-            if child:IsA("TextButton") then
-                child.BackgroundColor3 = Color3.fromRGB(50, 50, 50)
-                child.TextColor3 = Color3.fromRGB(180, 180, 180)
-            end
-        end
-        TabContent.Visible = true
-        TabButton.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
-        TabButton.TextColor3 = Color3.fromRGB(255, 215, 0)
-        currentTab = TabContent
-    end)
-    
-    return TabContent
-end
-
--- Создание вкладок
-local AimbotTab = CreateTab("Aimbot", 0)
-local ESPTab = CreateTab("ESP", 120)
-local MiscTab = CreateTab("Misc", 240)
-local SettingsTab = CreateTab("Settings", 360)
-
--- Функция создания чекбокса
-local function CreateCheckbox(parent, text, defaultValue, callback)
-    local yPos = #parent:GetChildren() * 35
-    
-    local Container = Instance.new("Frame")
-    Container.Name = text
-    Container.Size = UDim2.new(1, -10, 0, 30)
-    Container.Position = UDim2.new(0, 5, 0, yPos)
-    Container.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-    Container.BorderSizePixel = 0
-    Container.Parent = parent
-    
-    local ContainerCorner = Instance.new("UICorner")
-    ContainerCorner.CornerRadius = UDim.new(0, 6)
-    ContainerCorner.Parent = Container
-    
-    local Label = Instance.new("TextLabel")
-    Label.Size = UDim2.new(1, -40, 1, 0)
-    Label.Position = UDim2.new(0, 10, 0, 0)
-    Label.BackgroundTransparency = 1
-    Label.Text = text
-    Label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Label.TextSize = 13
-    Label.Font = Enum.Font.Gotham
-    Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.Parent = Container
-    
-    local Checkbox = Instance.new("TextButton")
-    Checkbox.Size = UDim2.new(0, 20, 0, 20)
-    Checkbox.Position = UDim2.new(1, -25, 0.5, -10)
-    Checkbox.BackgroundColor3 = defaultValue and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(60, 60, 60)
-    Checkbox.BorderSizePixel = 0
-    Checkbox.Text = defaultValue and "✓" or ""
-    Checkbox.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Checkbox.TextSize = 14
-    Checkbox.Font = Enum.Font.GothamBold
-    Checkbox.Parent = Container
-    
-    local CheckboxCorner = Instance.new("UICorner")
-    CheckboxCorner.CornerRadius = UDim.new(0, 4)
-    CheckboxCorner.Parent = Checkbox
-    
-    local value = defaultValue
-    
-    Checkbox.MouseButton1Click:Connect(function()
-        value = not value
-        Checkbox.BackgroundColor3 = value and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(60, 60, 60)
-        Checkbox.Text = value and "✓" or ""
-        callback(value)
-    end)
-    
-    return Container
-end
-
--- Функция создания слайдера
-local function CreateSlider(parent, text, min, max, defaultValue, callback)
-    local yPos = #parent:GetChildren() * 35
-    
-    local Container = Instance.new("Frame")
-    Container.Name = text
-    Container.Size = UDim2.new(1, -10, 0, 50)
-    Container.Position = UDim2.new(0, 5, 0, yPos)
-    Container.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-    Container.BorderSizePixel = 0
-    Container.Parent = parent
-    
-    local ContainerCorner = Instance.new("UICorner")
-    ContainerCorner.CornerRadius = UDim.new(0, 6)
-    ContainerCorner.Parent = Container
-    
-    local Label = Instance.new("TextLabel")
-    Label.Size = UDim2.new(1, -20, 0, 20)
-    Label.Position = UDim2.new(0, 10, 0, 5)
-    Label.BackgroundTransparency = 1
-    Label.Text = text .. ": " .. tostring(defaultValue)
-    Label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Label.TextSize = 13
-    Label.Font = Enum.Font.Gotham
-    Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.Parent = Container
-    
-    local SliderBack = Instance.new("Frame")
-    SliderBack.Size = UDim2.new(1, -20, 0, 6)
-    SliderBack.Position = UDim2.new(0, 10, 1, -15)
-    SliderBack.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-    SliderBack.BorderSizePixel = 0
-    SliderBack.Parent = Container
-    
-    local SliderBackCorner = Instance.new("UICorner")
-    SliderBackCorner.CornerRadius = UDim.new(0, 3)
-    SliderBackCorner.Parent = SliderBack
-    
-    local SliderFill = Instance.new("Frame")
-    SliderFill.Size = UDim2.new((defaultValue - min) / (max - min), 0, 1, 0)
-    SliderFill.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
-    SliderFill.BorderSizePixel = 0
-    SliderFill.Parent = SliderBack
-    
-    local SliderFillCorner = Instance.new("UICorner")
-    SliderFillCorner.CornerRadius = UDim.new(0, 3)
-    SliderFillCorner.Parent = SliderFill
-    
-    local dragging = false
-    local value = defaultValue
-    
-    local function UpdateSlider(input)
-        local pos = math.clamp((input.Position.X - SliderBack.AbsolutePosition.X) / SliderBack.AbsoluteSize.X, 0, 1)
-        value = math.floor(min + (max - min) * pos)
-        SliderFill.Size = UDim2.new(pos, 0, 1, 0)
-        Label.Text = text .. ": " .. tostring(value)
-        callback(value)
+FOVBox:AddSlider('FOVThickness', {
+    Text = 'FOV Thickness',
+    Default = 2,
+    Min = 1,
+    Max = 5,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.Aimbot.FOVThickness = Value
+        FOVCircle.Thickness = Value
     end
-    
-    SliderBack.InputBegan:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = true
-            UpdateSlider(input)
-        end
-    end)
-    
-    SliderBack.InputEnded:Connect(function(input)
-        if input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dragging = false
-        end
-    end)
-    
-    UserInputService.InputChanged:Connect(function(input)
-        if dragging and input.UserInputType == Enum.UserInputType.MouseMovement then
-            UpdateSlider(input)
-        end
-    end)
-    
-    return Container
-end
+})
 
--- Функция создания выпадающего списка
-local function CreateDropdown(parent, text, options, defaultValue, callback)
-    local yPos = #parent:GetChildren() * 35
-    
-    local Container = Instance.new("Frame")
-    Container.Name = text
-    Container.Size = UDim2.new(1, -10, 0, 30)
-    Container.Position = UDim2.new(0, 5, 0, yPos)
-    Container.BackgroundColor3 = Color3.fromRGB(35, 35, 35)
-    Container.BorderSizePixel = 0
-    Container.Parent = parent
-    
-    local ContainerCorner = Instance.new("UICorner")
-    ContainerCorner.CornerRadius = UDim.new(0, 6)
-    ContainerCorner.Parent = Container
-    
-    local Label = Instance.new("TextLabel")
-    Label.Size = UDim2.new(0.5, -10, 1, 0)
-    Label.Position = UDim2.new(0, 10, 0, 0)
-    Label.BackgroundTransparency = 1
-    Label.Text = text
-    Label.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Label.TextSize = 13
-    Label.Font = Enum.Font.Gotham
-    Label.TextXAlignment = Enum.TextXAlignment.Left
-    Label.Parent = Container
-    
-    local Dropdown = Instance.new("TextButton")
-    Dropdown.Size = UDim2.new(0.5, -10, 0, 25)
-    Dropdown.Position = UDim2.new(0.5, 5, 0.5, -12.5)
-    Dropdown.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
-    Dropdown.BorderSizePixel = 0
-    Dropdown.Text = defaultValue
-    Dropdown.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Dropdown.TextSize = 12
-    Dropdown.Font = Enum.Font.Gotham
-    Dropdown.Parent = Container
-    
-    local DropdownCorner = Instance.new("UICorner")
-    DropdownCorner.CornerRadius = UDim.new(0, 4)
-    DropdownCorner.Parent = Dropdown
-    
-    local DropdownList = Instance.new("Frame")
-    DropdownList.Size = UDim2.new(0.5, -10, 0, #options * 25)
-    DropdownList.Position = UDim2.new(0.5, 5, 1, 5)
-    DropdownList.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-    DropdownList.BorderSizePixel = 0
-    DropdownList.Visible = false
-    DropdownList.ZIndex = 10
-    DropdownList.Parent = Container
-    
-    local DropdownListCorner = Instance.new("UICorner")
-    DropdownListCorner.CornerRadius = UDim.new(0, 4)
-    DropdownListCorner.Parent = DropdownList
-    
-    for i, option in ipairs(options) do
-        local OptionButton = Instance.new("TextButton")
-        OptionButton.Size = UDim2.new(1, 0, 0, 25)
-        OptionButton.Position = UDim2.new(0, 0, 0, (i - 1) * 25)
-        OptionButton.BackgroundColor3 = Color3.fromRGB(45, 45, 45)
-        OptionButton.BorderSizePixel = 0
-        OptionButton.Text = option
-        OptionButton.TextColor3 = Color3.fromRGB(255, 255, 255)
-        OptionButton.TextSize = 12
-        OptionButton.Font = Enum.Font.Gotham
-        OptionButton.ZIndex = 11
-        OptionButton.Parent = DropdownList
-        
-        OptionButton.MouseButton1Click:Connect(function()
-            Dropdown.Text = option
-            DropdownList.Visible = false
-            callback(option)
-        end)
+FOVBox:AddToggle('FOVFilled', {
+    Text = 'FOV Filled',
+    Default = false,
+    Callback = function(Value)
+        Settings.Aimbot.FOVFilled = Value
+        FOVCircle.Filled = Value
     end
-    
-    Dropdown.MouseButton1Click:Connect(function()
-        DropdownList.Visible = not DropdownList.Visible
-    end)
-    
-    return Container
-end
+})
 
--- Функция создания кнопки
-local function CreateButton(parent, text, callback)
-    local yPos = #parent:GetChildren() * 35
-    
-    local Button = Instance.new("TextButton")
-    Button.Name = text
-    Button.Size = UDim2.new(1, -10, 0, 35)
-    Button.Position = UDim2.new(0, 5, 0, yPos)
-    Button.BackgroundColor3 = Color3.fromRGB(0, 150, 255)
-    Button.BorderSizePixel = 0
-    Button.Text = text
-    Button.TextColor3 = Color3.fromRGB(255, 255, 255)
-    Button.TextSize = 14
-    Button.Font = Enum.Font.GothamBold
-    Button.Parent = parent
-    
-    local ButtonCorner = Instance.new("UICorner")
-    ButtonCorner.CornerRadius = UDim.new(0, 6)
-    ButtonCorner.Parent = Button
-    
-    Button.MouseButton1Click:Connect(callback)
-    
-    return Button
-end
+-- Wallbang Settings
+local WallbangBox = Tabs.Aimbot:AddRightGroupbox('Wallbang')
 
--- Настройки Aimbot
-CreateCheckbox(AimbotTab, "Включить Aimbot", Settings.Aimbot.Enabled, function(value)
-    Settings.Aimbot.Enabled = value
-end)
-
-CreateCheckbox(AimbotTab, "Silent Aim", Settings.Aimbot.SilentAim, function(value)
-    Settings.Aimbot.SilentAim = value
-end)
-
-CreateCheckbox(AimbotTab, "Показать FOV круг", Settings.Aimbot.ShowFOV, function(value)
-    Settings.Aimbot.ShowFOV = value
-    FOVCircle.Visible = value and Settings.Aimbot.Enabled
-end)
-
-CreateSlider(AimbotTab, "FOV радиус", 50, 300, Settings.Aimbot.FOV, function(value)
-    Settings.Aimbot.FOV = value
-    FOVCircle.Radius = value
-end)
-
-CreateSlider(AimbotTab, "FOV толщина", 1, 5, Settings.Aimbot.FOVThickness, function(value)
-    Settings.Aimbot.FOVThickness = value
-    FOVCircle.Thickness = value
-end)
-
-CreateCheckbox(AimbotTab, "FOV заливка", Settings.Aimbot.FOVFilled, function(value)
-    Settings.Aimbot.FOVFilled = value
-    FOVCircle.Filled = value
-end)
-
-CreateSlider(AimbotTab, "Плавность (0 = мгновенно)", 0, 100, Settings.Aimbot.Smoothness * 100, function(value)
-    Settings.Aimbot.Smoothness = value / 100
-end)
-
-CreateDropdown(AimbotTab, "Целиться в", {"Head", "HumanoidRootPart", "UpperTorso"}, Settings.Aimbot.TargetPart, function(value)
-    Settings.Aimbot.TargetPart = value
-end)
-
-CreateDropdown(AimbotTab, "Приоритет цели", {"Closest to Crosshair", "Lowest Health", "Closest Distance"}, Settings.Aimbot.TargetPriority, function(value)
-    Settings.Aimbot.TargetPriority = value
-end)
-
-CreateSlider(AimbotTab, "Макс. дистанция", 50, 500, Settings.Aimbot.MaxDistance, function(value)
-    Settings.Aimbot.MaxDistance = value
-end)
-
-CreateCheckbox(AimbotTab, "Проверка стен", Settings.Aimbot.WallCheck, function(value)
-    Settings.Aimbot.WallCheck = value
-end)
-
-CreateCheckbox(AimbotTab, "Ignore Walls (Wallbang)", Settings.Wallbang.IgnoreWalls, function(value)
-    Settings.Wallbang.IgnoreWalls = value
-    if value then
-        print("[One Tap] Wallbang включен - стены игнорируются")
+WallbangBox:AddToggle('IgnoreWalls', {
+    Text = 'Ignore Walls',
+    Default = false,
+    Callback = function(Value)
+        Settings.Wallbang.IgnoreWalls = Value
     end
-end)
+})
 
-CreateDropdown(AimbotTab, "Wallbang Mode", {"Always", "Raycast", "Penetration"}, Settings.Wallbang.WallbangMode, function(value)
-    Settings.Wallbang.WallbangMode = value
-end)
+WallbangBox:AddDropdown('WallbangMode', {
+    Values = {'Always', 'Raycast', 'Penetration'},
+    Default = 1,
+    Multi = false,
+    Text = 'Wallbang Mode',
+    Callback = function(Value)
+        Settings.Wallbang.WallbangMode = Value
+    end
+})
 
-CreateSlider(AimbotTab, "Wall Penetration %", 0, 100, Settings.Wallbang.WallPenetration, function(value)
-    Settings.Wallbang.WallPenetration = value
-end)
+WallbangBox:AddSlider('WallPenetration', {
+    Text = 'Penetration %',
+    Default = 100,
+    Min = 0,
+    Max = 100,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.Wallbang.WallPenetration = Value
+    end
+})
 
--- Auto Shoot настройки
-CreateCheckbox(AimbotTab, "Auto Shoot", Settings.AutoShoot.Enabled, function(value)
-    Settings.AutoShoot.Enabled = value
-end)
+-- Auto Shoot
+local AutoShootBox = Tabs.Aimbot:AddLeftGroupbox('Auto Shoot')
 
-CreateSlider(AimbotTab, "Auto Shoot CPS", 1, 20, Settings.AutoShoot.CPS, function(value)
-    Settings.AutoShoot.CPS = value
-end)
+AutoShootBox:AddToggle('AutoShoot', {
+    Text = 'Enable Auto Shoot',
+    Default = false,
+    Callback = function(Value)
+        Settings.AutoShoot.Enabled = Value
+    end
+})
 
-CreateSlider(AimbotTab, "Trigger Delay (ms)", 0, 500, Settings.AutoShoot.TriggerDelay, function(value)
-    Settings.AutoShoot.TriggerDelay = value
-end)
+AutoShootBox:AddSlider('AutoShootCPS', {
+    Text = 'CPS',
+    Default = 10,
+    Min = 1,
+    Max = 20,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.AutoShoot.CPS = Value
+    end
+})
 
--- Настройки ESP
-CreateCheckbox(ESPTab, "Включить ESP", Settings.ESP.Enabled, function(value)
-    Settings.ESP.Enabled = value
-    if not value then
-        for _, esp in pairs(ESPObjects) do
-            for _, obj in pairs(esp) do
-                obj.Visible = false
-            end
+AutoShootBox:AddSlider('TriggerDelay', {
+    Text = 'Trigger Delay (ms)',
+    Default = 0,
+    Min = 0,
+    Max = 500,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.AutoShoot.TriggerDelay = Value
+    end
+})
+
+-- ESP Tab
+local ESPBox = Tabs.ESP:AddLeftGroupbox('ESP Settings')
+
+ESPBox:AddToggle('ESPEnabled', {
+    Text = 'Enable ESP',
+    Default = false,
+    Callback = function(Value)
+        Settings.ESP.Enabled = Value
+    end
+})
+
+ESPBox:AddToggle('ESPBoxes', {
+    Text = 'Boxes',
+    Default = true,
+    Callback = function(Value)
+        Settings.ESP.Boxes = Value
+    end
+})
+
+ESPBox:AddToggle('ESPNames', {
+    Text = 'Names',
+    Default = true,
+    Callback = function(Value)
+        Settings.ESP.Names = Value
+    end
+})
+
+ESPBox:AddToggle('ESPHealth', {
+    Text = 'Health Bars',
+    Default = true,
+    Callback = function(Value)
+        Settings.ESP.Health = Value
+    end
+})
+
+ESPBox:AddToggle('ESPDistance', {
+    Text = 'Distance',
+    Default = true,
+    Callback = function(Value)
+        Settings.ESP.Distance = Value
+    end
+})
+
+ESPBox:AddToggle('ESPTracers', {
+    Text = 'Tracers',
+    Default = false,
+    Callback = function(Value)
+        Settings.ESP.Tracers = Value
+    end
+})
+
+-- Misc Tab
+local MiscBox = Tabs.Misc:AddLeftGroupbox('Movement')
+
+MiscBox:AddToggle('ThirdPerson', {
+    Text = 'Third Person',
+    Default = false,
+    Callback = function(Value)
+        Settings.ThirdPerson.Enabled = Value
+    end
+})
+
+MiscBox:AddSlider('ThirdPersonDistance', {
+    Text = 'Camera Distance',
+    Default = 5,
+    Min = 2,
+    Max = 20,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.ThirdPerson.Distance = Value
+    end
+})
+
+MiscBox:AddToggle('Spinbot', {
+    Text = 'Spinbot',
+    Default = false,
+    Callback = function(Value)
+        Settings.Spinbot.Enabled = Value
+    end
+})
+
+MiscBox:AddSlider('SpinSpeed', {
+    Text = 'Spin Speed',
+    Default = 20,
+    Min = 1,
+    Max = 100,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.Spinbot.Speed = Value
+    end
+})
+
+MiscBox:AddDropdown('SpinAxis', {
+    Values = {'Yaw', 'Pitch', 'Both'},
+    Default = 1,
+    Multi = false,
+    Text = 'Spin Axis',
+    Callback = function(Value)
+        Settings.Spinbot.Axis = Value
+    end
+})
+
+MiscBox:AddToggle('BunnyHop', {
+    Text = 'Bunny Hop',
+    Default = false,
+    Callback = function(Value)
+        Settings.BunnyHop.Enabled = Value
+    end
+})
+
+MiscBox:AddSlider('BhopMinSpeed', {
+    Text = 'Min Speed',
+    Default = 10,
+    Min = 0,
+    Max = 50,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.BunnyHop.MinSpeed = Value
+    end
+})
+
+-- Visual Settings
+local VisualBox = Tabs.Misc:AddRightGroupbox('Visual')
+
+VisualBox:AddSlider('CameraFOV', {
+    Text = 'Camera FOV',
+    Default = 70,
+    Min = 40,
+    Max = 120,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.Visual.CameraFOV = Value
+    end
+})
+
+VisualBox:AddToggle('HighlightTarget', {
+    Text = 'Highlight Target',
+    Default = true,
+    Callback = function(Value)
+        Settings.Visual.HighlightTarget = Value
+    end
+})
+
+VisualBox:AddSlider('HighlightThickness', {
+    Text = 'Highlight Thickness',
+    Default = 3,
+    Min = 1,
+    Max = 5,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.Visual.HighlightThickness = Value
+        if targetHighlight then
+            targetHighlight.Thickness = Value
         end
     end
-end)
+})
 
-CreateCheckbox(ESPTab, "Показать боксы", Settings.ESP.Boxes, function(value)
-    Settings.ESP.Boxes = value
-end)
+-- Settings Tab
+Library:SetWatermarkVisibility(true)
+Library:SetWatermark('ONE TAP V3 | Premium Edition')
 
-CreateCheckbox(ESPTab, "Показать имена", Settings.ESP.Names, function(value)
-    Settings.ESP.Names = value
-end)
+ThemeManager:SetLibrary(Library)
+SaveManager:SetLibrary(Library)
 
-CreateCheckbox(ESPTab, "Показать здоровье", Settings.ESP.Health, function(value)
-    Settings.ESP.Health = value
-end)
+SaveManager:IgnoreThemeSettings()
+SaveManager:SetIgnoreIndexes({'MenuKeybind'})
 
-CreateCheckbox(ESPTab, "Показать дистанцию", Settings.ESP.Distance, function(value)
-    Settings.ESP.Distance = value
-end)
+ThemeManager:SetFolder('OneTapV3')
+SaveManager:SetFolder('OneTapV3/configs')
 
-CreateCheckbox(ESPTab, "Показать трассеры", Settings.ESP.Tracers, function(value)
-    Settings.ESP.Tracers = value
-end)
+SaveManager:BuildConfigSection(Tabs.Settings)
+ThemeManager:ApplyToTab(Tabs.Settings)
 
--- Настройки Misc (Third Person & Spinbot)
-CreateCheckbox(MiscTab, "Third Person Mode", Settings.ThirdPerson.Enabled, function(value)
-    Settings.ThirdPerson.Enabled = value
-end)
-
-CreateSlider(MiscTab, "Camera Distance", 2, 20, Settings.ThirdPerson.Distance, function(value)
-    Settings.ThirdPerson.Distance = value
-end)
-
-CreateCheckbox(MiscTab, "Spinbot", Settings.Spinbot.Enabled, function(value)
-    Settings.Spinbot.Enabled = value
-end)
-
-CreateSlider(MiscTab, "Spin Speed", 1, 100, Settings.Spinbot.Speed, function(value)
-    Settings.Spinbot.Speed = value
-end)
-
-CreateDropdown(MiscTab, "Spin Axis", {"Yaw", "Pitch", "Both"}, Settings.Spinbot.Axis, function(value)
-    Settings.Spinbot.Axis = value
-end)
-
-CreateCheckbox(MiscTab, "Jitter", Settings.Spinbot.Jitter, function(value)
-    Settings.Spinbot.Jitter = value
-end)
-
-CreateSlider(MiscTab, "Jitter Amount", 0, 10, Settings.Spinbot.JitterAmount, function(value)
-    Settings.Spinbot.JitterAmount = value
-end)
-
--- Bunny Hop настройки
-CreateCheckbox(MiscTab, "Bunny Hop", Settings.BunnyHop.Enabled, function(value)
-    Settings.BunnyHop.Enabled = value
-end)
-
-CreateDropdown(MiscTab, "Hold Key", {"None", "Space", "LeftControl", "LeftShift"}, Settings.BunnyHop.HoldKey, function(value)
-    Settings.BunnyHop.HoldKey = value
-end)
-
-CreateCheckbox(MiscTab, "Auto Strafe", Settings.BunnyHop.AutoStrafe, function(value)
-    Settings.BunnyHop.AutoStrafe = value
-end)
-
-CreateSlider(MiscTab, "Min Speed", 0, 50, Settings.BunnyHop.MinSpeed, function(value)
-    Settings.BunnyHop.MinSpeed = value
-end)
-
--- Visual настройки
-CreateSlider(MiscTab, "Camera FOV", 40, 120, Settings.Visual.CameraFOV, function(value)
-    Settings.Visual.CameraFOV = value
-end)
-
-CreateCheckbox(MiscTab, "Highlight Target", Settings.Visual.HighlightTarget, function(value)
-    Settings.Visual.HighlightTarget = value
-end)
-
-CreateSlider(MiscTab, "Highlight Thickness", 1, 5, Settings.Visual.HighlightThickness, function(value)
-    Settings.Visual.HighlightThickness = value
-    if targetHighlight then
-        targetHighlight.Thickness = value
-    end
-end)
-
--- Настройки Settings
-CreateButton(SettingsTab, "Сохранить конфигурацию", function()
-    SaveSettings()
-end)
-
-CreateButton(SettingsTab, "Выгрузить скрипт", function()
-    getgenv().OneTapLoaded = false
-    
-    -- Удаление всех ESP объектов
-    for target, esp in pairs(ESPObjects) do
-        for _, obj in pairs(esp) do
-            pcall(function() obj:Remove() end)
-        end
-    end
-    ESPObjects = {}
-    NPCList = {}
-    
-    -- Удаление FOV круга
-    pcall(function() FOVCircle:Remove() end)
-    
-    -- Удаление подсветки цели
-    if targetHighlight then
-        pcall(function() targetHighlight:Remove() end)
-        targetHighlight = nil
-    end
-    
-    -- Восстановление оригинального Camera FOV
-    if Camera then
-        Camera.FieldOfView = originalCameraFOV
-    end
-    
-    -- Восстановление Third Person настроек
-    if originalCameraType then
-        Camera.CameraType = originalCameraType
-        Camera.CameraSubject = originalCameraSubject
-    end
-    
-    -- Удаление GUI
-    pcall(function() ScreenGui:Destroy() end)
-    
-    print("========================================")
-    print("[One Tap] Скрипт выгружен!")
-    print("[One Tap] Camera FOV восстановлен: " .. originalCameraFOV)
-    print("========================================")
-end)
-
--- Показать первую вкладку
-AimbotTab.Visible = true
-for _, child in pairs(TabContainer:GetChildren()) do
-    if child.Name == "AimbotTab" then
-        child.BackgroundColor3 = Color3.fromRGB(70, 70, 70)
-        child.TextColor3 = Color3.fromRGB(255, 215, 0)
-        break
-    end
-end
-
--- Переключение видимости GUI (RightShift или Insert) с анимацией
-local guiVisible = false
-local tweenInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
-
-UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if input.KeyCode == Enum.KeyCode.RightShift or input.KeyCode == Enum.KeyCode.Insert then
-        guiVisible = not guiVisible
-        
-        if guiVisible then
-            MainFrame.Visible = true
-            MainFrame.Size = UDim2.new(0, 0, 0, 0)
-            MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
-            
-            local openTween = TweenService:Create(MainFrame, tweenInfo, {
-                Size = UDim2.new(0, 550, 0, 450),
-                Position = UDim2.new(0.5, -275, 0.5, -225)
-            })
-            openTween:Play()
-            print("[One Tap] Меню открыто")
-        else
-            local closeTween = TweenService:Create(MainFrame, tweenInfo, {
-                Size = UDim2.new(0, 0, 0, 0),
-                Position = UDim2.new(0.5, 0, 0.5, 0)
-            })
-            closeTween:Play()
-            closeTween.Completed:Connect(function()
-                MainFrame.Visible = false
-            end)
-            print("[One Tap] Меню закрыто")
-        end
-    end
-end)
-
--- Основной цикл обновления
+-- Основной цикл
 RunService.RenderStepped:Connect(function()
-    -- Обновление позиции FOV круга (центр экрана)
     local viewportSize = Camera.ViewportSize
     FOVCircle.Position = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
     FOVCircle.Visible = Settings.Aimbot.ShowFOV and Settings.Aimbot.Enabled
     
-    -- Получение текущей цели
     currentTarget = nil
     if Settings.Aimbot.Enabled or Settings.AutoShoot.Enabled then
         currentTarget = GetClosestEnemy()
     end
     
-    -- Aimbot (обычный, если Silent Aim выключен или используется Camera Snap метод)
     if Settings.Aimbot.Enabled then
         if currentTarget and currentTarget.Character then
             local targetPart = currentTarget.Character:FindFirstChild(Settings.Aimbot.TargetPart)
@@ -1510,7 +1108,6 @@ RunService.RenderStepped:Connect(function()
                 targetPart = currentTarget.Character:FindFirstChild("Head") or currentTarget.Character:FindFirstChild("HumanoidRootPart")
             end
             if targetPart then
-                -- Если Silent Aim выключен - используем обычный аим
                 if not Settings.Aimbot.SilentAim then
                     AimAt(targetPart)
                 end
@@ -1518,25 +1115,13 @@ RunService.RenderStepped:Connect(function()
         end
     end
     
-    -- Auto Shoot
     AutoShoot()
-    
-    -- Third Person
     UpdateThirdPerson()
-    
-    -- Spinbot
     UpdateSpinbot()
-    
-    -- Bunny Hop
     UpdateBunnyHop()
-    
-    -- Camera FOV
     UpdateCameraFOV()
-    
-    -- Target Highlight
     UpdateTargetHighlight()
     
-    -- ESP для игроков
     if Settings.ESP.Enabled then
         for _, player in pairs(Players:GetPlayers()) do
             if player ~= LocalPlayer then
@@ -1547,7 +1132,6 @@ RunService.RenderStepped:Connect(function()
             end
         end
         
-        -- ESP для NPC
         for npc, _ in pairs(NPCList) do
             if npc and npc.Parent then
                 if not ESPObjects[npc] then
@@ -1555,29 +1139,50 @@ RunService.RenderStepped:Connect(function()
                 end
                 UpdateESP(npc, {Type = "NPC", Character = npc, Name = npc.Name or "Bot"})
             else
-                RemoveESP(npc)
+                if ESPObjects[npc] then
+                    for _, obj in pairs(ESPObjects[npc]) do
+                        pcall(function() obj:Remove() end)
+                    end
+                    ESPObjects[npc] = nil
+                end
                 NPCList[npc] = nil
             end
         end
     end
 end)
 
+Library:OnUnload(function()
+    getgenv().OneTapLoaded = false
+    
+    for target, esp in pairs(ESPObjects) do
+        for _, obj in pairs(esp) do
+            pcall(function() obj:Remove() end)
+        end
+    end
+    
+    pcall(function() FOVCircle:Remove() end)
+    
+    if targetHighlight then
+        pcall(function() targetHighlight:Remove() end)
+    end
+    
+    if Camera then
+        Camera.FieldOfView = originalCameraFOV
+    end
+    
+    if originalCameraType then
+        Camera.CameraType = originalCameraType
+        Camera.CameraSubject = originalCameraSubject
+    end
+    
+    print('ONE TAP V3 Unloaded!')
+end)
+
 print("========================================")
 print("ONE TAP V3 - PREMIUM EDITION")
+print("LinoriaLib GUI Loaded")
 print("========================================")
-print("Новые функции:")
-print("✓ NPC/Bot Detection")
-print("✓ Silent Aim (Improved Camera Snap)")
-print("✓ Auto Shoot")
-print("✓ Wallbang (Always/Raycast/Penetration)")
-print("✓ Third Person Mode")
-print("✓ Spinbot")
-print("✓ Bunny Hop")
-print("✓ Camera FOV Changer")
-print("✓ Target Highlighting")
-print("✓ Animated GUI")
+print("✓ All Features Active")
+print("✓ Professional GUI")
+print("✓ Config System")
 print("========================================")
-print("Нажмите RightShift или Insert для меню")
-print("GUI Parent:", ScreenGui.Parent and ScreenGui.Parent:GetFullName() or "None")
-print("MainFrame создан:", MainFrame ~= nil)
-print("=========================================")
