@@ -26,6 +26,7 @@ local RunService = game:GetService("RunService")
 local UserInputService = game:GetService("UserInputService")
 local Camera = workspace.CurrentCamera
 local VirtualInputManager = game:GetService("VirtualInputManager")
+local TweenService = game:GetService("TweenService")
 
 local LocalPlayer = Players.LocalPlayer
 local Mouse = LocalPlayer:GetMouse()
@@ -56,7 +57,14 @@ local Settings = {
     },
     Wallbang = {
         IgnoreWalls = false,
+        WallbangMode = "Always",
         WallPenetration = 100
+    },
+    Visual = {
+        CameraFOV = 70,
+        HighlightTarget = true,
+        HighlightColor = Color3.fromRGB(255, 215, 0),
+        HighlightThickness = 3
     },
     ESP = {
         Enabled = false,
@@ -162,6 +170,12 @@ local spinAngle = 0
 local lastJumpTime = 0
 local bhopKeyPressed = false
 
+-- Переменные для Camera FOV
+local originalCameraFOV = Camera.FieldOfView or 70
+
+-- Переменные для подсветки цели
+local targetHighlight = nil
+
 -- Функция получения всех целей (игроки + NPC)
 local function GetAllTargets()
     local targets = {}
@@ -211,11 +225,18 @@ local function GetAllTargets()
     return targets
 end
 
--- Функция проверки видимости через стены
+-- Функция проверки видимости через стены (с поддержкой разных режимов Wallbang)
 local function IsVisible(targetPart)
-    -- Если Wallbang включен - игнорируем стены
+    -- Если Wallbang включен
     if Settings.Wallbang.IgnoreWalls then
-        return true
+        if Settings.Wallbang.WallbangMode == "Always" then
+            -- Режим Always: всегда пробивает любые стены
+            return true
+        elseif Settings.Wallbang.WallbangMode == "Penetration" then
+            -- Режим Penetration: шанс пробития
+            return math.random(1, 100) <= Settings.Wallbang.WallPenetration
+        end
+        -- Режим Raycast: проверка ниже
     end
     
     -- Если проверка стен выключена
@@ -316,14 +337,72 @@ local function AimAt(targetPart)
     end
 end
 
--- Silent Aim через камеру (альтернативный метод)
-local silentAimActive = false
-local silentAimTarget = nil
-local originalCameraCFrame = nil
+-- Функция создания подсветки цели
+local function CreateTargetHighlight()
+    if targetHighlight then
+        targetHighlight:Remove()
+    end
+    
+    targetHighlight = Drawing.new("Square")
+    targetHighlight.Thickness = Settings.Visual.HighlightThickness
+    targetHighlight.Color = Settings.Visual.HighlightColor
+    targetHighlight.Filled = false
+    targetHighlight.Transparency = 1
+    targetHighlight.Visible = false
+end
 
-local function SilentAimCamera()
+-- Функция обновления подсветки цели
+local function UpdateTargetHighlight()
+    if not Settings.Visual.HighlightTarget or not currentTarget then
+        if targetHighlight then
+            targetHighlight.Visible = false
+        end
+        return
+    end
+    
+    if not targetHighlight then
+        CreateTargetHighlight()
+    end
+    
+    if currentTarget and currentTarget.Character then
+        local targetPart = currentTarget.Character:FindFirstChild(Settings.Aimbot.TargetPart)
+        if not targetPart then
+            targetPart = currentTarget.Character:FindFirstChild("Head") or currentTarget.Character:FindFirstChild("HumanoidRootPart")
+        end
+        
+        if targetPart then
+            local screenPos, onScreen = Camera:WorldToViewportPoint(targetPart.Position)
+            if onScreen then
+                local size = Vector2.new(50, 50)
+                targetHighlight.Size = size
+                targetHighlight.Position = Vector2.new(screenPos.X - size.X / 2, screenPos.Y - size.Y / 2)
+                targetHighlight.Color = Settings.Visual.HighlightColor
+                targetHighlight.Thickness = Settings.Visual.HighlightThickness
+                targetHighlight.Visible = true
+            else
+                targetHighlight.Visible = false
+            end
+        else
+            targetHighlight.Visible = false
+        end
+    else
+        targetHighlight.Visible = false
+    end
+end
+
+-- Silent Aim функция (улучшенный метод через мгновенный поворот камеры)
+local silentAimSupported = true
+local isSilentAiming = false
+local savedCameraCFrame = nil
+
+print("[One Tap] Silent Aim: Camera Snap Method (Improved)")
+
+-- Отслеживание нажатия мыши для Silent Aim
+Mouse.Button1Down:Connect(function()
     if not Settings.Aimbot.SilentAim then return end
+    if not Settings.Aimbot.Enabled then return end
     if not currentTarget or not currentTarget.Character then return end
+    if isSilentAiming then return end
     
     local targetPart = currentTarget.Character:FindFirstChild(Settings.Aimbot.TargetPart)
     if not targetPart then
@@ -331,69 +410,28 @@ local function SilentAimCamera()
     end
     
     if targetPart then
-        silentAimTarget = targetPart
-        silentAimActive = true
+        isSilentAiming = true
+        
+        -- Сохраняем текущую позицию камеры
+        savedCameraCFrame = Camera.CFrame
+        
+        -- Мгновенно поворачиваем камеру на цель
+        local targetPos = targetPart.Position
+        local cameraPos = Camera.CFrame.Position
+        local direction = (targetPos - cameraPos).Unit
+        Camera.CFrame = CFrame.new(cameraPos, cameraPos + direction)
+        
+        -- Возвращаем камеру обратно в том же кадре (через task.wait())
+        task.spawn(function()
+            task.wait() -- Ждём 1 кадр
+            if savedCameraCFrame then
+                Camera.CFrame = savedCameraCFrame
+                savedCameraCFrame = nil
+            end
+            isSilentAiming = false
+        end)
     end
-end
-
--- Silent Aim функция (подмена направления выстрела)
-local silentAimSupported = true
-
-if hookmetamethod and getnamecallmethod then
-    -- Метод 1: Через hookmetamethod (если поддерживается)
-    local oldNamecall
-    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-        local method = getnamecallmethod()
-        local args = {...}
-        
-        if Settings.Aimbot.SilentAim and currentTarget and currentTarget.Character then
-            if method == "FireServer" or method == "InvokeServer" then
-                local targetPart = currentTarget.Character:FindFirstChild(Settings.Aimbot.TargetPart)
-                if targetPart then
-                    if args[1] and typeof(args[1]) == "Vector3" then
-                        args[1] = targetPart.Position
-                    end
-                end
-            end
-        end
-        
-        return oldNamecall(self, unpack(args))
-    end)
-    print("[One Tap] Silent Aim: Метод hookmetamethod")
-else
-    -- Метод 2: Через быстрое наведение камеры (работает везде)
-    print("[One Tap] Silent Aim: Метод Camera Snap")
-    
-    -- Отслеживание нажатия мыши для Silent Aim
-    Mouse.Button1Down:Connect(function()
-        if Settings.Aimbot.SilentAim and currentTarget and currentTarget.Character then
-            local targetPart = currentTarget.Character:FindFirstChild(Settings.Aimbot.TargetPart)
-            if not targetPart then
-                targetPart = currentTarget.Character:FindFirstChild("Head") or currentTarget.Character:FindFirstChild("HumanoidRootPart")
-            end
-            
-            if targetPart then
-                -- Сохраняем оригинальную позицию камеры
-                originalCameraCFrame = Camera.CFrame
-                
-                -- Мгновенно наводим на цель
-                local targetPos = targetPart.Position
-                local cameraPos = Camera.CFrame.Position
-                local direction = (targetPos - cameraPos).Unit
-                Camera.CFrame = CFrame.new(cameraPos, cameraPos + direction)
-                
-                -- Возвращаем камеру через минимальную задержку
-                task.spawn(function()
-                    task.wait(0.03)
-                    if originalCameraCFrame then
-                        Camera.CFrame = originalCameraCFrame
-                        originalCameraCFrame = nil
-                    end
-                end)
-            end
-        end
-    end)
-end
+end)
 
 -- Auto Shoot функция
 local function AutoShoot()
@@ -523,6 +561,13 @@ local function UpdateBunnyHop()
                 end
             end)
         end
+    end
+end
+
+-- Camera FOV функция
+local function UpdateCameraFOV()
+    if Camera then
+        Camera.FieldOfView = Settings.Visual.CameraFOV
     end
 end
 
@@ -838,7 +883,7 @@ Title.Name = "Title"
 Title.Size = UDim2.new(1, 0, 0, 45)
 Title.BackgroundColor3 = Color3.fromRGB(40, 40, 40)
 Title.BorderSizePixel = 0
-Title.Text = "ONE TAP V2 | CS:GO STYLE"
+Title.Text = "ONE TAP V3 | PREMIUM"
 Title.TextColor3 = Color3.fromRGB(255, 215, 0)
 Title.TextSize = 20
 Title.Font = Enum.Font.GothamBold
@@ -1240,6 +1285,14 @@ CreateCheckbox(AimbotTab, "Ignore Walls (Wallbang)", Settings.Wallbang.IgnoreWal
     end
 end)
 
+CreateDropdown(AimbotTab, "Wallbang Mode", {"Always", "Raycast", "Penetration"}, Settings.Wallbang.WallbangMode, function(value)
+    Settings.Wallbang.WallbangMode = value
+end)
+
+CreateSlider(AimbotTab, "Wall Penetration %", 0, 100, Settings.Wallbang.WallPenetration, function(value)
+    Settings.Wallbang.WallPenetration = value
+end)
+
 -- Auto Shoot настройки
 CreateCheckbox(AimbotTab, "Auto Shoot", Settings.AutoShoot.Enabled, function(value)
     Settings.AutoShoot.Enabled = value
@@ -1331,6 +1384,22 @@ CreateSlider(MiscTab, "Min Speed", 0, 50, Settings.BunnyHop.MinSpeed, function(v
     Settings.BunnyHop.MinSpeed = value
 end)
 
+-- Visual настройки
+CreateSlider(MiscTab, "Camera FOV", 40, 120, Settings.Visual.CameraFOV, function(value)
+    Settings.Visual.CameraFOV = value
+end)
+
+CreateCheckbox(MiscTab, "Highlight Target", Settings.Visual.HighlightTarget, function(value)
+    Settings.Visual.HighlightTarget = value
+end)
+
+CreateSlider(MiscTab, "Highlight Thickness", 1, 5, Settings.Visual.HighlightThickness, function(value)
+    Settings.Visual.HighlightThickness = value
+    if targetHighlight then
+        targetHighlight.Thickness = value
+    end
+end)
+
 -- Настройки Settings
 CreateButton(SettingsTab, "Сохранить конфигурацию", function()
     SaveSettings()
@@ -1342,19 +1411,39 @@ CreateButton(SettingsTab, "Выгрузить скрипт", function()
     -- Удаление всех ESP объектов
     for target, esp in pairs(ESPObjects) do
         for _, obj in pairs(esp) do
-            obj:Remove()
+            pcall(function() obj:Remove() end)
         end
     end
     ESPObjects = {}
     NPCList = {}
     
     -- Удаление FOV круга
-    FOVCircle:Remove()
+    pcall(function() FOVCircle:Remove() end)
+    
+    -- Удаление подсветки цели
+    if targetHighlight then
+        pcall(function() targetHighlight:Remove() end)
+        targetHighlight = nil
+    end
+    
+    -- Восстановление оригинального Camera FOV
+    if Camera then
+        Camera.FieldOfView = originalCameraFOV
+    end
+    
+    -- Восстановление Third Person настроек
+    if originalCameraType then
+        Camera.CameraType = originalCameraType
+        Camera.CameraSubject = originalCameraSubject
+    end
     
     -- Удаление GUI
-    ScreenGui:Destroy()
+    pcall(function() ScreenGui:Destroy() end)
     
-    print("Скрипт выгружен!")
+    print("========================================")
+    print("[One Tap] Скрипт выгружен!")
+    print("[One Tap] Camera FOV восстановлен: " .. originalCameraFOV)
+    print("========================================")
 end)
 
 -- Показать первую вкладку
@@ -1367,13 +1456,36 @@ for _, child in pairs(TabContainer:GetChildren()) do
     end
 end
 
--- Переключение видимости GUI (RightShift или Insert)
+-- Переключение видимости GUI (RightShift или Insert) с анимацией
 local guiVisible = false
+local tweenInfo = TweenInfo.new(0.3, Enum.EasingStyle.Quint, Enum.EasingDirection.Out)
+
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
     if input.KeyCode == Enum.KeyCode.RightShift or input.KeyCode == Enum.KeyCode.Insert then
         guiVisible = not guiVisible
-        MainFrame.Visible = guiVisible
-        print("[One Tap] Меню " .. (guiVisible and "открыто" or "закрыто"))
+        
+        if guiVisible then
+            MainFrame.Visible = true
+            MainFrame.Size = UDim2.new(0, 0, 0, 0)
+            MainFrame.Position = UDim2.new(0.5, 0, 0.5, 0)
+            
+            local openTween = TweenService:Create(MainFrame, tweenInfo, {
+                Size = UDim2.new(0, 550, 0, 450),
+                Position = UDim2.new(0.5, -275, 0.5, -225)
+            })
+            openTween:Play()
+            print("[One Tap] Меню открыто")
+        else
+            local closeTween = TweenService:Create(MainFrame, tweenInfo, {
+                Size = UDim2.new(0, 0, 0, 0),
+                Position = UDim2.new(0.5, 0, 0.5, 0)
+            })
+            closeTween:Play()
+            closeTween.Completed:Connect(function()
+                MainFrame.Visible = false
+            end)
+            print("[One Tap] Меню закрыто")
+        end
     end
 end)
 
@@ -1418,6 +1530,12 @@ RunService.RenderStepped:Connect(function()
     -- Bunny Hop
     UpdateBunnyHop()
     
+    -- Camera FOV
+    UpdateCameraFOV()
+    
+    -- Target Highlight
+    UpdateTargetHighlight()
+    
     -- ESP для игроков
     if Settings.ESP.Enabled then
         for _, player in pairs(Players:GetPlayers()) do
@@ -1445,18 +1563,19 @@ RunService.RenderStepped:Connect(function()
 end)
 
 print("========================================")
-print("ONE TAP V2 - CS:GO STYLE LOADED")
+print("ONE TAP V3 - PREMIUM EDITION")
 print("========================================")
 print("Новые функции:")
 print("✓ NPC/Bot Detection")
-print("✓ Silent Aim (Camera Snap)")
+print("✓ Silent Aim (Improved Camera Snap)")
 print("✓ Auto Shoot")
-print("✓ Wallbang")
+print("✓ Wallbang (Always/Raycast/Penetration)")
 print("✓ Third Person Mode")
 print("✓ Spinbot")
 print("✓ Bunny Hop")
-print("✓ Extended FOV Settings")
-print("✓ Target Priority System")
+print("✓ Camera FOV Changer")
+print("✓ Target Highlighting")
+print("✓ Animated GUI")
 print("========================================")
 print("Нажмите RightShift или Insert для меню")
 print("GUI Parent:", ScreenGui.Parent and ScreenGui.Parent:GetFullName() or "None")
