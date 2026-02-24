@@ -319,26 +319,32 @@ local function AimAt(targetPart)
 end
 
 -- Silent Aim функция (подмена направления выстрела)
-local oldNamecall
-oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
-    local method = getnamecallmethod()
-    local args = {...}
-    
-    if Settings.Aimbot.SilentAim and currentTarget and currentTarget.Character then
-        if method == "FireServer" or method == "InvokeServer" then
-            local targetPart = currentTarget.Character:FindFirstChild(Settings.Aimbot.TargetPart)
-            if targetPart then
-                if Settings.Aimbot.SilentAimMode == "On Shoot" then
-                    if args[1] and typeof(args[1]) == "Vector3" then
-                        args[1] = targetPart.Position
+local silentAimSupported = false
+if hookmetamethod and getnamecallmethod then
+    silentAimSupported = true
+    local oldNamecall
+    oldNamecall = hookmetamethod(game, "__namecall", function(self, ...)
+        local method = getnamecallmethod()
+        local args = {...}
+        
+        if Settings.Aimbot.SilentAim and currentTarget and currentTarget.Character then
+            if method == "FireServer" or method == "InvokeServer" then
+                local targetPart = currentTarget.Character:FindFirstChild(Settings.Aimbot.TargetPart)
+                if targetPart then
+                    if Settings.Aimbot.SilentAimMode == "On Shoot" then
+                        if args[1] and typeof(args[1]) == "Vector3" then
+                            args[1] = targetPart.Position
+                        end
                     end
                 end
             end
         end
-    end
-    
-    return oldNamecall(self, unpack(args))
-end)
+        
+        return oldNamecall(self, unpack(args))
+    end)
+else
+    warn("[One Tap] Silent Aim не поддерживается вашим эксплойтом")
+end
 
 -- Auto Shoot функция
 local function AutoShoot()
@@ -350,13 +356,19 @@ local function AutoShoot()
         local shootInterval = 1 / Settings.AutoShoot.CPS
         
         if currentTime - lastShootTime >= shootInterval + (Settings.AutoShoot.TriggerDelay / 1000) then
-            if mouse1click then
-                mouse1click()
-            elseif VirtualInputManager then
-                VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
-                task.wait(0.01)
-                VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
-            end
+            pcall(function()
+                if mouse1click then
+                    mouse1click()
+                elseif mouse1press and mouse1release then
+                    mouse1press()
+                    task.wait(0.01)
+                    mouse1release()
+                elseif VirtualInputManager then
+                    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, true, game, 0)
+                    task.wait(0.01)
+                    VirtualInputManager:SendMouseButtonEvent(0, 0, 0, false, game, 0)
+                end
+            end)
             lastShootTime = currentTime
         end
     end
@@ -739,13 +751,20 @@ ScreenGui.Name = "OneTapGUI"
 ScreenGui.ResetOnSpawn = false
 ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
 
-if gethui then
-    ScreenGui.Parent = gethui()
-elseif syn and syn.protect_gui then
-    syn.protect_gui(ScreenGui)
-    ScreenGui.Parent = game.CoreGui
-else
-    ScreenGui.Parent = game.CoreGui
+-- Защита GUI от обнаружения
+pcall(function()
+    if gethui then
+        ScreenGui.Parent = gethui()
+    elseif syn and syn.protect_gui then
+        syn.protect_gui(ScreenGui)
+        ScreenGui.Parent = game.CoreGui
+    else
+        ScreenGui.Parent = game.CoreGui
+    end
+end)
+
+if not ScreenGui.Parent then
+    ScreenGui.Parent = game:GetService("Players").LocalPlayer:WaitForChild("PlayerGui")
 end
 
 -- Главное окно (CS:GO Style)
@@ -1121,13 +1140,31 @@ CreateCheckbox(AimbotTab, "Включить Aimbot", Settings.Aimbot.Enabled, fu
     Settings.Aimbot.Enabled = value
 end)
 
-CreateCheckbox(AimbotTab, "Silent Aim", Settings.Aimbot.SilentAim, function(value)
-    Settings.Aimbot.SilentAim = value
-end)
-
-CreateDropdown(AimbotTab, "Silent Aim Mode", {"Always", "On Shoot"}, Settings.Aimbot.SilentAimMode, function(value)
-    Settings.Aimbot.SilentAimMode = value
-end)
+if silentAimSupported then
+    CreateCheckbox(AimbotTab, "Silent Aim", Settings.Aimbot.SilentAim, function(value)
+        Settings.Aimbot.SilentAim = value
+    end)
+    
+    CreateDropdown(AimbotTab, "Silent Aim Mode", {"Always", "On Shoot"}, Settings.Aimbot.SilentAimMode, function(value)
+        Settings.Aimbot.SilentAimMode = value
+    end)
+else
+    -- Показать предупреждение, что Silent Aim недоступен
+    local WarningLabel = Instance.new("TextLabel")
+    WarningLabel.Size = UDim2.new(1, -10, 0, 30)
+    WarningLabel.Position = UDim2.new(0, 5, 0, #AimbotTab:GetChildren() * 35)
+    WarningLabel.BackgroundColor3 = Color3.fromRGB(60, 30, 30)
+    WarningLabel.BorderSizePixel = 0
+    WarningLabel.Text = "⚠ Silent Aim не поддерживается"
+    WarningLabel.TextColor3 = Color3.fromRGB(255, 100, 100)
+    WarningLabel.TextSize = 12
+    WarningLabel.Font = Enum.Font.Gotham
+    WarningLabel.Parent = AimbotTab
+    
+    local WarningCorner = Instance.new("UICorner")
+    WarningCorner.CornerRadius = UDim.new(0, 6)
+    WarningCorner.Parent = WarningLabel
+end
 
 CreateCheckbox(AimbotTab, "Показать FOV круг", Settings.Aimbot.ShowFOV, function(value)
     Settings.Aimbot.ShowFOV = value
@@ -1383,7 +1420,11 @@ print("ONE TAP V2 - CS:GO STYLE LOADED")
 print("========================================")
 print("Новые функции:")
 print("✓ NPC/Bot Detection")
-print("✓ Silent Aim")
+if silentAimSupported then
+    print("✓ Silent Aim")
+else
+    print("✗ Silent Aim (не поддерживается)")
+end
 print("✓ Auto Shoot")
 print("✓ Wallbang")
 print("✓ Third Person Mode")
@@ -1393,6 +1434,6 @@ print("✓ Extended FOV Settings")
 print("✓ Target Priority System")
 print("========================================")
 print("Нажмите RightShift или Insert для меню")
-print("GUI Parent:", ScreenGui.Parent:GetFullName())
+print("GUI Parent:", ScreenGui.Parent and ScreenGui.Parent:GetFullName() or "None")
 print("MainFrame создан:", MainFrame ~= nil)
 print("=========================================")
