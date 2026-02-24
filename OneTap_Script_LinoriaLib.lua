@@ -41,7 +41,8 @@ local Settings = {
         FOVColor = Color3.fromRGB(255, 255, 255),
         FOVThickness = 2,
         FOVFilled = false,
-        FOVTransparency = 0.5
+        FOVTransparency = 0.5,
+        IgnoreFOV = false
     },
     AutoShoot = {
         Enabled = false,
@@ -56,9 +57,18 @@ local Settings = {
     },
     Visual = {
         CameraFOV = 70,
-        HighlightTarget = true,
+        HighlightTarget = false,
         HighlightColor = Color3.fromRGB(255, 215, 0),
         HighlightThickness = 3
+    },
+    HitboxExpander = {
+        Enabled = true,
+        HeadSize = 10,
+        TorsoSize = 5
+    },
+    QuickSwap = {
+        Enabled = false,
+        Key = "Q"
     },
     ESP = {
         Enabled = false,
@@ -107,6 +117,8 @@ local originalCameraFOV = Camera.FieldOfView or 70
 local targetHighlight = nil
 local isSilentAiming = false
 local savedCameraCFrame = nil
+local originalHeadSizes = {}
+local quickSwapPressed = false
 
 -- Инициализация FOV круга
 FOVCircle.Thickness = Settings.Aimbot.FOVThickness
@@ -221,7 +233,10 @@ local function GetClosestEnemy()
                     local screenPoint = Vector2.new(screenPos.X, screenPos.Y)
                     local distanceFromCenter = (screenPoint - viewportCenter).Magnitude
                     
-                    if distanceFromCenter <= Settings.Aimbot.FOV then
+                    -- Ignore FOV если включено
+                    local withinFOV = Settings.Aimbot.IgnoreFOV or (distanceFromCenter <= Settings.Aimbot.FOV)
+                    
+                    if withinFOV then
                         if LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart") then
                             local distance3D = (LocalPlayer.Character.HumanoidRootPart.Position - targetPart.Position).Magnitude
                             
@@ -323,7 +338,9 @@ local function UpdateTargetHighlight()
     end
 end
 
--- Silent Aim с улучшенной точностью и предсказанием
+-- Silent Aim (невидимый для игрока - камера не двигается визуально)
+local silentAimConnection = nil
+
 Mouse.Button1Down:Connect(function()
     if not Settings.Aimbot.SilentAim then return end
     if not Settings.Aimbot.Enabled then return end
@@ -337,35 +354,37 @@ Mouse.Button1Down:Connect(function()
     
     if targetPart then
         isSilentAiming = true
-        savedCameraCFrame = Camera.CFrame
         
-        -- Предсказание позиции цели (velocity prediction)
+        -- Предсказание позиции цели
         local targetPos = targetPart.Position
         local targetVelocity = targetPart.AssemblyLinearVelocity or Vector3.new(0, 0, 0)
         local distance = (targetPos - Camera.CFrame.Position).Magnitude
-        local bulletSpeed = 1000 -- Примерная скорость пули
+        local bulletSpeed = 1000
         local timeToHit = distance / bulletSpeed
-        
-        -- Предсказываем позицию с учётом движения
         local predictedPos = targetPos + (targetVelocity * timeToHit)
         
-        -- Расширение хитбокса - целимся чуть выше центра для лучшего попадания
-        if Settings.Aimbot.TargetPart == "Head" then
-            predictedPos = predictedPos + Vector3.new(0, 0.2, 0)
-        end
+        -- Сохраняем оригинальную камеру
+        savedCameraCFrame = Camera.CFrame
         
+        -- Поворачиваем камеру на цель (игра видит, игрок нет)
         local cameraPos = Camera.CFrame.Position
         local direction = (predictedPos - cameraPos).Unit
-        Camera.CFrame = CFrame.new(cameraPos, cameraPos + direction)
+        local targetCFrame = CFrame.new(cameraPos, cameraPos + direction)
         
-        -- Удерживаем прицел на цели чуть дольше для гарантии попадания
-        task.spawn(function()
-            task.wait(0.05) -- Увеличено с task.wait() до 0.05 сек
+        -- Мгновенно поворачиваем
+        Camera.CFrame = targetCFrame
+        
+        -- Возвращаем камеру МГНОВЕННО в следующем кадре
+        silentAimConnection = RunService.RenderStepped:Connect(function()
             if savedCameraCFrame then
                 Camera.CFrame = savedCameraCFrame
+                if silentAimConnection then
+                    silentAimConnection:Disconnect()
+                    silentAimConnection = nil
+                end
                 savedCameraCFrame = nil
+                isSilentAiming = false
             end
-            isSilentAiming = false
         end)
     end
 end)
@@ -490,10 +509,89 @@ local function UpdateBunnyHop()
     end
 end
 
--- Camera FOV
+-- Camera FOV с поддержкой viewmodel
 local function UpdateCameraFOV()
     if Camera then
         Camera.FieldOfView = Settings.Visual.CameraFOV
+    end
+    
+    -- Применяем FOV к оружию (viewmodel)
+    if LocalPlayer.Character then
+        for _, obj in pairs(Camera:GetChildren()) do
+            if obj:IsA("Model") then
+                -- Это viewmodel оружия
+                local fovMultiplier = Settings.Visual.CameraFOV / 70
+                obj:ScaleTo(fovMultiplier)
+            end
+        end
+    end
+end
+
+-- Hitbox Expander
+local function UpdateHitboxes()
+    if not Settings.HitboxExpander.Enabled then
+        -- Восстанавливаем оригинальные размеры
+        for part, originalSize in pairs(originalHeadSizes) do
+            if part and part.Parent then
+                part.Size = originalSize
+                part.Transparency = 1
+                part.CanCollide = false
+            end
+        end
+        originalHeadSizes = {}
+        return
+    end
+    
+    local targets = GetAllTargets()
+    for _, target in pairs(targets) do
+        if target.Character then
+            local head = target.Character:FindFirstChild("Head")
+            local torso = target.Character:FindFirstChild("HumanoidRootPart") or target.Character:FindFirstChild("UpperTorso")
+            
+            if head and not originalHeadSizes[head] then
+                originalHeadSizes[head] = head.Size
+                head.Size = Vector3.new(Settings.HitboxExpander.HeadSize, Settings.HitboxExpander.HeadSize, Settings.HitboxExpander.HeadSize)
+                head.Transparency = 0.5
+                head.CanCollide = false
+            end
+            
+            if torso and not originalHeadSizes[torso] then
+                originalHeadSizes[torso] = torso.Size
+                torso.Size = Vector3.new(Settings.HitboxExpander.TorsoSize, Settings.HitboxExpander.TorsoSize, Settings.HitboxExpander.TorsoSize)
+                torso.Transparency = 0.5
+                torso.CanCollide = false
+            end
+        end
+    end
+end
+
+-- Quick Swap (быстрая смена оружия)
+local lastSwapTime = 0
+local function QuickSwap()
+    if not Settings.QuickSwap.Enabled then return end
+    
+    local currentTime = tick()
+    if currentTime - lastSwapTime < 0.1 then return end
+    
+    if LocalPlayer.Character then
+        local humanoid = LocalPlayer.Character:FindFirstChild("Humanoid")
+        if humanoid then
+            -- Быстрая смена на нож и обратно
+            task.spawn(function()
+                -- Переключаемся на слот 3 (нож)
+                game:GetService("VirtualInputManager"):SendKeyEvent(true, Enum.KeyCode.Three, false, game)
+                task.wait(0.05)
+                game:GetService("VirtualInputManager"):SendKeyEvent(false, Enum.KeyCode.Three, false, game)
+                
+                -- Возвращаемся на предыдущее оружие
+                task.wait(0.05)
+                game:GetService("VirtualInputManager"):SendKeyEvent(true, Enum.KeyCode.One, false, game)
+                task.wait(0.05)
+                game:GetService("VirtualInputManager"):SendKeyEvent(false, Enum.KeyCode.One, false, game)
+            end)
+            
+            lastSwapTime = currentTime
+        end
     end
 end
 
@@ -619,8 +717,8 @@ local function UpdateESP(target, targetData)
     end
     
     local screenPos, onScreen = Camera:WorldToViewportPoint(rootPart.Position)
-    local headPos = head and Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0)) or screenPos
-    local legPos = Camera:WorldToViewportPoint(rootPart.Position - Vector3.new(0, 3, 0))
+    local headPos = head and Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 1, 0)) or screenPos
+    local legPos = Camera:WorldToViewportPoint(rootPart.Position - Vector3.new(0, 2.5, 0))
     
     if onScreen then
         -- Размер бокса
@@ -786,9 +884,18 @@ AimbotBox:AddToggle('AimbotEnabled', {
 AimbotBox:AddToggle('SilentAim', {
     Text = 'Silent Aim',
     Default = false,
-    Tooltip = 'Мгновенное наведение при выстреле',
+    Tooltip = 'Невидимое наведение (камера не двигается)',
     Callback = function(Value)
         Settings.Aimbot.SilentAim = Value
+    end
+})
+
+AimbotBox:AddToggle('IgnoreFOV', {
+    Text = 'Ignore FOV',
+    Default = false,
+    Tooltip = 'Стреляет в любого видимого игрока',
+    Callback = function(Value)
+        Settings.Aimbot.IgnoreFOV = Value
     end
 })
 
@@ -1090,25 +1197,62 @@ VisualBox:AddSlider('CameraFOV', {
     end
 })
 
-VisualBox:AddToggle('HighlightTarget', {
-    Text = 'Highlight Target',
+-- Hitbox Expander
+local HitboxBox = Tabs.Misc:AddRightGroupbox('Hitbox Expander')
+
+HitboxBox:AddToggle('HitboxEnabled', {
+    Text = 'Enable Hitbox Expander',
     Default = true,
     Callback = function(Value)
-        Settings.Visual.HighlightTarget = Value
+        Settings.HitboxExpander.Enabled = Value
     end
 })
 
-VisualBox:AddSlider('HighlightThickness', {
-    Text = 'Highlight Thickness',
-    Default = 3,
-    Min = 1,
-    Max = 5,
+HitboxBox:AddSlider('HeadSize', {
+    Text = 'Head Size',
+    Default = 10,
+    Min = 2,
+    Max = 20,
     Rounding = 0,
     Compact = false,
     Callback = function(Value)
-        Settings.Visual.HighlightThickness = Value
-        if targetHighlight then
-            targetHighlight.Thickness = Value
+        Settings.HitboxExpander.HeadSize = Value
+    end
+})
+
+HitboxBox:AddSlider('TorsoSize', {
+    Text = 'Torso Size',
+    Default = 5,
+    Min = 2,
+    Max = 15,
+    Rounding = 0,
+    Compact = false,
+    Callback = function(Value)
+        Settings.HitboxExpander.TorsoSize = Value
+    end
+})
+
+-- Quick Swap
+local QuickSwapBox = Tabs.Misc:AddLeftGroupbox('Quick Swap')
+
+QuickSwapBox:AddToggle('QuickSwapEnabled', {
+    Text = 'Enable Quick Swap',
+    Default = false,
+    Tooltip = 'Быстрая смена оружия (как в CS)',
+    Callback = function(Value)
+        Settings.QuickSwap.Enabled = Value
+    end
+})
+
+QuickSwapBox:AddLabel('Press Q for Quick Swap'):AddKeyPicker('QuickSwapKey', {
+    Default = 'Q',
+    SyncToggleState = false,
+    Mode = 'Hold',
+    Text = 'Quick Swap',
+    NoUI = false,
+    Callback = function(Value)
+        if Value then
+            QuickSwap()
         end
     end
 })
@@ -1168,7 +1312,12 @@ RunService.RenderStepped:Connect(function()
     UpdateThirdPerson()
     UpdateSpinbot()
     UpdateBunnyHop()
-    UpdateTargetHighlight()
+    UpdateHitboxes()
+    
+    -- Убираем подсветку цели
+    if targetHighlight then
+        targetHighlight.Visible = false
+    end
     
     if Settings.ESP.Enabled then
         -- Очистка ESP для игроков которые вышли
