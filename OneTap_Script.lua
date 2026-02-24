@@ -1304,19 +1304,21 @@ for _, child in pairs(TabContainer:GetChildren()) do
     end
 end
 
--- Переключение видимости GUI
+-- Переключение видимости GUI (RightShift или Insert)
 local guiVisible = false
 UserInputService.InputBegan:Connect(function(input, gameProcessed)
-    if not gameProcessed and input.KeyCode == Enum.KeyCode.RightShift then
+    if input.KeyCode == Enum.KeyCode.RightShift or input.KeyCode == Enum.KeyCode.Insert then
         guiVisible = not guiVisible
         MainFrame.Visible = guiVisible
+        print("[One Tap] Меню " .. (guiVisible and "открыто" or "закрыто"))
     end
 end)
 
 -- Основной цикл обновления
 RunService.RenderStepped:Connect(function()
-    -- Обновление позиции FOV круга
-    FOVCircle.Position = Vector2.new(Mouse.X, Mouse.Y + 36)
+    -- Обновление позиции FOV круга (центр экрана)
+    local viewportSize = Camera.ViewportSize
+    FOVCircle.Position = Vector2.new(viewportSize.X / 2, viewportSize.Y / 2)
     FOVCircle.Visible = Settings.Aimbot.ShowFOV and Settings.Aimbot.Enabled
     
     -- Получение текущей цели
@@ -1390,5 +1392,7 @@ print("✓ Bunny Hop")
 print("✓ Extended FOV Settings")
 print("✓ Target Priority System")
 print("========================================")
-print("Нажмите RightShift для открытия меню")
-print("========================================")
+print("Нажмите RightShift или Insert для меню")
+print("GUI Parent:", ScreenGui.Parent:GetFullName())
+print("MainFrame создан:", MainFrame ~= nil)
+print("=========================================")
